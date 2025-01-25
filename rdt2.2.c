@@ -128,6 +128,10 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
             // Registrar o tempo de envio
             gettimeofday(&start, NULL);
 
+            
+            // Registrar o tempo de envio
+            gettimeofday(&start, NULL);
+
             sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             printf("Enviado pacote %d\n", _snd_seqnum);
             _snd_seqnum++;
@@ -147,7 +151,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
         addrlen = sizeof(struct sockaddr_in);
         nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, (socklen_t *)&addrlen);
 
-        if (nr > 0) {
+        if (nr > 0) 
             // Registrar o tempo de chegada do ACK
             gettimeofday(&end, NULL);
 
@@ -199,6 +203,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 
     return buf_len;
 }
+
 
 
 
