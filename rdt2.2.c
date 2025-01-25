@@ -100,80 +100,73 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
 	return TRUE;
 }
 
+#define WINDOW_SIZE 4 // Tamanho fixo da janela de transmissão
+
 int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     pkt p, ack;
     struct sockaddr_in dst_ack;
     int ns, nr, addrlen;
     struct timeval start, end;
     double SampleRTT, TimeoutInterval;
-    
-    // Criação do pacote
-    if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0)
-        return ERROR;
+    int packets_in_flight = 0; // Pacotes não confirmados
+    hseq_t base = _snd_seqnum; // Base da janela
 
-    // Cálculo inicial do Timeout Interval
+    // Calcular Timeout Interval inicial
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
-resend:
-    // Registrar o tempo de envio
-    gettimeofday(&start, NULL);
-
-    // Enviar o pacote
-    ns = sendto(sockfd, &p, p.h.pkt_size, 0,
-                (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-    if (ns < 0) {
-        perror("rdt_send: sendto(PKT_DATA):");
-        return ERROR;
-    }
-
-    // Configurar timeout dinâmico
-    struct timeval timeout;
-    timeout.tv_sec = (int)TimeoutInterval;             // Segundos
-    timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6; // Microsegundos
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        perror("rdt_send: setsockopt");
-        return ERROR;
-    }
-
-    // Aguardar ACK
-    addrlen = sizeof(struct sockaddr_in);
-    nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack,
-                  (socklen_t *)&addrlen);
-
-    if (nr < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            printf("rdt_send: Timeout ao aguardar ACK. Reenviando pacote...\n");
-            goto resend;
-        } else {
-            perror("rdt_send: recvfrom(PKT_ACK)");
+    while (1) {
+        // Enviar pacotes enquanto houver espaço na janela
+        while (packets_in_flight < WINDOW_SIZE) {
+            if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
+                return ERROR;
+            }
+            sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            printf("Enviado pacote %d\n", _snd_seqnum);
+            _snd_seqnum++;
+            packets_in_flight++;
+        }
+		
+        // Configurar timeout dinâmico
+        struct timeval timeout;
+        timeout.tv_sec = (int)TimeoutInterval;
+        timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+            perror("rdt_send: setsockopt");
             return ERROR;
+        }
+
+        // Aguardar ACKs
+        addrlen = sizeof(struct sockaddr_in);
+        nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, (socklen_t *)&addrlen);
+
+        if (nr > 0) {
+            if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= base) {
+                printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
+                // Avançar a base da janela e ajustar pacotes em voo
+                packets_in_flight -= (ack.h.pkt_seq - base + 1);
+                base = ack.h.pkt_seq + 1;
+            }
+        } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            printf("Timeout. Retransmitindo pacotes...\n");
+            // Retransmitir pacotes não confirmados
+            for (hseq_t i = base; i < _snd_seqnum; i++) {
+                if (make_pkt(&p, PKT_DATA, i, buf, buf_len) < 0) {
+                    return ERROR;
+                }
+                sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+                printf("Retransmitido pacote %d\n", i);
+            }
+        }
+
+        // Se todos os pacotes foram confirmados, sair do loop
+        if (packets_in_flight == 0) {
+            break;
         }
     }
 
-    // Registrar o tempo de chegada do ACK
-    gettimeofday(&end, NULL);
-
-    // Calcular SampleRTT (em segundos)
-    SampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-
-    // Atualizar EstRTT e DevRTT
-    EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
-    DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
-
-    // Atualizar TimeoutInterval
-    TimeoutInterval = EstRTT + 4 * DevRTT;
-	printf("timeout interval: %f\n", TimeoutInterval);
-
-    // Verificar se o pacote recebido está corrompido ou com sequência incorreta
-    if (iscorrupted(&ack) || !has_ackseq(&ack, _snd_seqnum)) {
-        printf("rdt_send: iscorrupted || !has_ackseq\n");
-        goto resend;
-    }
-
-    // Incrementar o número de sequência ao receber um ACK válido
-    _snd_seqnum++;
     return buf_len;
 }
+
 
 
 int has_dataseqnum(pkt *p, hseq_t seqnum) {
@@ -232,8 +225,3 @@ rerecv:
 	return p.h.pkt_size - sizeof(hdr);
 }
 
-// int timedout(float tempo) {
-// 	if (tempo > 2)
-// 		return TRUE;
-// 	return FALSE;
-// }

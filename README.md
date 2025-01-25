@@ -1,5 +1,3 @@
-# redes02
-
 gcc servidor.c rdt2.2.c -o servidor
 gcc cliente.c rdt2.2.c -o cliente
 ./servidor 12345
