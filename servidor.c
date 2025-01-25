@@ -7,45 +7,31 @@
 
 #include "rdt.h"
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        printf("uso: %s <porta_servidor>\n", argv[0]);
-        return 0;
-    }
-
+int main() {
     int sockfd;
-    struct sockaddr_in saddr, caddr;
+    struct sockaddr_in server_addr, client_addr;
+    char buffer[MAX_MSG_LEN];
+    int buf_len;
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sockfd < 0) {
-        perror("Erro ao criar o socket");
-        return 1;
-    }
+    // Configuração do socket e do servidor
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(8080); // Porta do servidor
+    server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    saddr.sin_family = AF_INET;
-    saddr.sin_port = htons(atoi(argv[1]));
-    saddr.sin_addr.s_addr = INADDR_ANY;
+    bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
 
-    if (bind(sockfd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
-        perror("Erro ao fazer bind");
-        return 1;
-    }
+    while (1) { // Loop contínuo para receber pacotes
+        printf("Aguardando mensagem...\n");
+        buf_len = rdt_recv(sockfd, buffer, MAX_MSG_LEN, &client_addr);
 
-    printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
-
-    while (1) {
-        int msg;
-        socklen_t caddr_len = sizeof(caddr);
-
-        // sleep(6);
-
-        int r = rdt_recv(sockfd, &msg, sizeof(msg), &caddr);
-        if (r < 0) {
-            printf("Erro ao receber mensagem.\n");
-        } else {
-            printf("Mensagem recebida: %d\n", msg);
+        if (buf_len > 0) {
+            buffer[buf_len] = '\0';
+            printf("Mensagem recebida: %s\n", buffer);
         }
     }
 
+    close(sockfd);
     return 0;
 }
+
