@@ -100,32 +100,40 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
 	return TRUE;
 }
 
-#define WINDOW_SIZE 4 // Tamanho fixo da janela de transmissão
+#define INITIAL_WINDOW_SIZE 1   // Tamanho inicial da janela
+#define MAX_WINDOW_SIZE 64      // Tamanho máximo da janela
+#define AIMD_INCREMENT 1        // Incremento aditivo
+#define AIMD_DECREASE_FACTOR 0.5 // Fator multiplicativo para redução
 
 int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     pkt p, ack;
     struct sockaddr_in dst_ack;
-    int ns, nr, addrlen;
+    int nr, addrlen;
     struct timeval start, end;
     double SampleRTT, TimeoutInterval;
-    int packets_in_flight = 0; // Pacotes não confirmados
-    hseq_t base = _snd_seqnum; // Base da janela
+    int packets_in_flight = 0;   // Pacotes não confirmados
+    hseq_t base = _snd_seqnum;   // Base da janela
+    int cwnd = INITIAL_WINDOW_SIZE; // Janela de congestionamento (dinâmica)
 
     // Calcular Timeout Interval inicial
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
     while (1) {
-        // Enviar pacotes enquanto houver espaço na janela
-        while (packets_in_flight < WINDOW_SIZE) {
+        // Enviar pacotes enquanto houver espaço na janela dinâmica
+        while (packets_in_flight < cwnd && packets_in_flight < MAX_WINDOW_SIZE) {
             if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
                 return ERROR;
             }
+            
+            // Registrar o tempo de envio
+            gettimeofday(&start, NULL);
+
             sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             printf("Enviado pacote %d\n", _snd_seqnum);
             _snd_seqnum++;
             packets_in_flight++;
         }
-		
+
         // Configurar timeout dinâmico
         struct timeval timeout;
         timeout.tv_sec = (int)TimeoutInterval;
@@ -140,14 +148,39 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
         nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, (socklen_t *)&addrlen);
 
         if (nr > 0) {
+            // Registrar o tempo de chegada do ACK
+            gettimeofday(&end, NULL);
+
+            // Calcular SampleRTT (em segundos)
+            SampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+
+            // Atualizar EstRTT e DevRTT
+            EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
+            DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
+
+            // Atualizar TimeoutInterval
+            TimeoutInterval = EstRTT + 4 * DevRTT;
+
+            printf("Timeout atualizado: %f segundos\n", TimeoutInterval);
+
             if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= base) {
                 printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
                 // Avançar a base da janela e ajustar pacotes em voo
                 packets_in_flight -= (ack.h.pkt_seq - base + 1);
                 base = ack.h.pkt_seq + 1;
+
+                // **AIMD: Incremento aditivo** - Aumentar a janela
+                cwnd += AIMD_INCREMENT;
+                if (cwnd > MAX_WINDOW_SIZE) cwnd = MAX_WINDOW_SIZE;
+                printf("AIMD: Nova janela de congestionamento (cwnd) = %d\n", cwnd);
             }
         } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            printf("Timeout. Retransmitindo pacotes...\n");
+            printf("Timeout. Reduzindo a janela...\n");
+            // **AIMD: Redução multiplicativa** - Reduzir a janela
+            cwnd = (int)(cwnd * AIMD_DECREASE_FACTOR);
+            if (cwnd < 1) cwnd = 1; // Garantir que a janela nunca seja zero
+            printf("AIMD: Janela reduzida após timeout (cwnd) = %d\n", cwnd);
+
             // Retransmitir pacotes não confirmados
             for (hseq_t i = base; i < _snd_seqnum; i++) {
                 if (make_pkt(&p, PKT_DATA, i, buf, buf_len) < 0) {
@@ -166,6 +199,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 
     return buf_len;
 }
+
 
 
 
