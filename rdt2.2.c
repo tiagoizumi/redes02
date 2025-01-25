@@ -120,12 +120,16 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
             if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
                 return ERROR;
             }
+            
+            // Registrar o tempo de envio
+            gettimeofday(&start, NULL);
+
             sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             printf("Enviado pacote %d\n", _snd_seqnum);
             _snd_seqnum++;
             packets_in_flight++;
         }
-		
+        
         // Configurar timeout dinâmico
         struct timeval timeout;
         timeout.tv_sec = (int)TimeoutInterval;
@@ -140,6 +144,20 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
         nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, (socklen_t *)&addrlen);
 
         if (nr > 0) {
+            // Registrar o tempo de chegada do ACK
+            gettimeofday(&end, NULL);
+
+            // Calcular SampleRTT (em segundos)
+            SampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+
+            // Atualizar EstRTT e DevRTT
+            EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
+            DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
+
+            // Atualizar TimeoutInterval
+            TimeoutInterval = EstRTT + 4 * DevRTT;
+            printf("Timeout atualizado: %f segundos\n", TimeoutInterval);
+
             if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= base) {
                 printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
                 // Avançar a base da janela e ajustar pacotes em voo
@@ -166,6 +184,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 
     return buf_len;
 }
+
 
 
 
