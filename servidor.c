@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
 
         // sleep(6);
 
-        int r = rdt_recv(sockfd, &msg, sizeof(msg), &caddr);
+        int r = rdt_recv(sockfd, &msg, caddr_len, &caddr);
         if (r < 0) {
             printf("Erro ao receber mensagem.\n");
         } else {
