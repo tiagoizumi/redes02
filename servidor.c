@@ -7,6 +7,9 @@
 
 #include "rdt.h"
 
+#define MIN 10
+#define MAX 900
+
 int main(int argc, char **argv) {
     if (argc != 2) {
         printf("uso: %s <porta_servidor>\n", argv[0]);
@@ -37,7 +40,7 @@ int main(int argc, char **argv) {
         int msg;
         socklen_t caddr_len = sizeof(caddr);
 
-        // sleep(6);
+        usleep(rand() % (MAX - MIN + 1) + MIN);
 
         int r = rdt_recv(sockfd, &msg, caddr_len, &caddr);
         if (r < 0) {

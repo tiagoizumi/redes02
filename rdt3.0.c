@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -22,13 +23,11 @@ typedef uint16_t hcsum_t;
 typedef uint16_t hseq_t;
 typedef uint8_t  htype_t;
 
-
 #define PKT_ACK 0
 #define PKT_DATA 1
 
 hseq_t _snd_seqnum = 1;
 hseq_t _rcv_seqnum = 1;
-
 
 // Variáveis globais para RTT
 double EstRTT = 1.0;  // Valor inicial do RTT estimado (em segundos)
@@ -50,6 +49,44 @@ struct pkt {
 	unsigned char msg[MAX_MSG_LEN];
 };
 typedef struct pkt pkt;
+
+typedef struct queue_node {
+	pkt data;
+	struct queue_node *next;
+} queue_node;
+
+typedef struct {
+	struct queue_node *start;
+	struct queue_node *finish;
+} queue;
+
+void init_queue(queue *q) {
+	q->start = NULL;
+  q->finish = NULL;
+}
+
+int is_empty(queue *q) {
+	return q->start == NULL;
+}
+
+void enqueue(queue *q, pkt value) {
+	queue_node *new_node = (queue_node *)malloc(sizeof(queue_node));
+	if (!new_node) return;
+	new_node->data = value;
+	new_node->next = NULL;
+	if (q->finish) q->finish->next = new_node;
+	q->finish = new_node;
+	if (q->start == NULL) q->start = new_node;
+}
+
+pkt dequeue(queue *q) {
+	pkt value = q->start->data;
+	queue_node *temp = q->start;
+	q->start = q->start->next;
+	if (q->start == NULL) q->finish = NULL;
+	free(temp);
+	return value;
+}
 
 unsigned short checksum(unsigned short *buf, int nbytes){
 	register long sum;
@@ -100,7 +137,6 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
 		return FALSE;
 	return TRUE;
 }
-
 
 int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     pkt p, ack;
@@ -180,23 +216,21 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     return buf_len;
 }
 
-
-
-
 int has_dataseqnum(pkt *p, hseq_t seqnum) {
 	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
 		return FALSE;
 	return TRUE;
 }
 
+queue buf_queue;
+
 int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
 	pkt p, ack;
 	int nr, ns;
 	int addrlen;
 	memset(&p, 0, sizeof(hdr));
-	sleep(4);
-        if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0)
-                return ERROR;
+	//sleep(4);
+  if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
 
 rerecv:
 	addrlen = sizeof(struct sockaddr_in);
@@ -217,25 +251,29 @@ rerecv:
 		}
 		goto rerecv;
 	}
-	int msg_size = p.h.pkt_size - sizeof(hdr);
-	if (msg_size > buf_len) {
-		printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
-			buf_len, msg_size);
-		return ERROR;
-	}
-	memcpy(buf, p.msg, msg_size);
-	// enviar ACK
+  
+	enqueue(&buf_queue, p);
 
-	if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0)
-                return ERROR;
+  while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
+    int msg_size = p.h.pkt_size - sizeof(hdr);
+    if (msg_size > buf_len) {
+      printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
+        buf_len, msg_size);
+      return ERROR;
+    }
+    memcpy(buf, p.msg, msg_size);
+    // enviar ACK
 
-	ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
-                (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
-	if (ns < 0) {
-                perror("rdt_rcv: sendto(PKT_ACK)");
-                return ERROR;
-        }
-	_rcv_seqnum++;
+    if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) return ERROR;
+
+    ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
+                  (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+    if (ns < 0) {
+      perror("rdt_rcv: sendto(PKT_ACK)");
+      return ERROR;
+    }
+    _rcv_seqnum++;
+  }
 	return p.h.pkt_size - sizeof(hdr);
 }
 
