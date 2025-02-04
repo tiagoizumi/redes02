@@ -16,6 +16,8 @@
 #define SUCCESS 0
 #define WINDOW_SIZE 4 
 
+#define BUFFER_SIZE 10
+
 int biterror_inject = FALSE;
 
 typedef uint16_t hsize_t;
@@ -229,7 +231,6 @@ int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
 	int nr, ns;
 	int addrlen;
 	memset(&p, 0, sizeof(hdr));
-	//sleep(4);
   if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
 
 rerecv:
@@ -255,6 +256,7 @@ rerecv:
 	enqueue(&buf_queue, p);
 
   while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
+    dequeue(&buf_queue);
     int msg_size = p.h.pkt_size - sizeof(hdr);
     if (msg_size > buf_len) {
       printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
@@ -276,4 +278,3 @@ rerecv:
   }
 	return p.h.pkt_size - sizeof(hdr);
 }
-
