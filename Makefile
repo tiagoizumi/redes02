@@ -15,5 +15,5 @@ run_server: servidor
 
 # Run client
 run_client: cliente
-	./cliente 127.0.0.1 12345
+	./cliente 127.0.0.1 12345 teste.txt
 

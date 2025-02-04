@@ -16,7 +16,7 @@
 #define SUCCESS 0
 #define WINDOW_SIZE 4 
 
-#define BUFFER_SIZE 10
+#define BUFFER_QUEUE_SIZE 8
 
 int biterror_inject = FALSE;
 
@@ -43,7 +43,6 @@ struct hdr {
 	htype_t pkt_type;
 	hcsum_t csum;
 };
-
 typedef struct hdr hdr;
 
 struct pkt {
@@ -52,19 +51,24 @@ struct pkt {
 };
 typedef struct pkt pkt;
 
-typedef struct queue_node {
+struct queue_node {
 	pkt data;
 	struct queue_node *next;
-} queue_node;
+};
+typedef struct queue_node queue_node;
 
-typedef struct {
-	struct queue_node *start;
-	struct queue_node *finish;
-} queue;
+struct queue {
+	queue_node *start;
+	queue_node *finish;
+	int size;
+};
+
+typedef struct queue queue;
 
 void init_queue(queue *q) {
 	q->start = NULL;
   q->finish = NULL;
+	q->size = 0;
 }
 
 int is_empty(queue *q) {
@@ -79,6 +83,7 @@ void enqueue(queue *q, pkt value) {
 	if (q->finish) q->finish->next = new_node;
 	q->finish = new_node;
 	if (q->start == NULL) q->start = new_node;
+	q->size++;
 }
 
 pkt dequeue(queue *q) {
@@ -87,6 +92,7 @@ pkt dequeue(queue *q) {
 	q->start = q->start->next;
 	if (q->start == NULL) q->finish = NULL;
 	free(temp);
+	q->size--;
 	return value;
 }
 
@@ -152,8 +158,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     // Calcular Timeout Interval inicial
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
-    for(int it=0; it<15; it++) {
-		// sleep(1);
+    for(int it=0; it< 15; it++) {
         // Enviar pacotes enquanto houver espaço na janela estática
         while (packets_in_flight < WINDOW_SIZE) {
             if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
@@ -219,8 +224,10 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 }
 
 int has_dataseqnum(pkt *p, hseq_t seqnum) {
-	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
+	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA) {
+		printf("%d %d %d\n", p->h.pkt_seq, seqnum, p->h.pkt_type);
 		return FALSE;
+	}
 	return TRUE;
 }
 
@@ -230,6 +237,8 @@ int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
 	pkt p, ack;
 	int nr, ns;
 	int addrlen;
+
+createpck:
 	memset(&p, 0, sizeof(hdr));
   if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
 
@@ -241,7 +250,9 @@ rerecv:
 		perror("recvfrom():");
 		return ERROR;
 	}
-	if (iscorrupted(&p) || !has_dataseqnum(&p, _rcv_seqnum)) {
+	int corrupted = iscorrupted(&p);
+	int dataseqnum = has_dataseqnum(&p, _rcv_seqnum);
+	if (corrupted || !dataseqnum) {
 		printf("rdt_recv: iscorrupted || has_dataseqnum \n");
 		// enviar ultimo ACK (_rcv_seqnum - 1)
 		ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
@@ -252,21 +263,25 @@ rerecv:
 		}
 		goto rerecv;
 	}
-  
+	
+	//printf("seq %d\n", p.h.pkt_seq);
 	enqueue(&buf_queue, p);
 
+	if(buf_queue.size < BUFFER_QUEUE_SIZE)
+		goto createpck;
+
   while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
-    dequeue(&buf_queue);
-    int msg_size = p.h.pkt_size - sizeof(hdr);
+    pkt current = dequeue(&buf_queue);
+    int msg_size = current.h.pkt_size - sizeof(hdr);
     if (msg_size > buf_len) {
       printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
         buf_len, msg_size);
       return ERROR;
     }
-    memcpy(buf, p.msg, msg_size);
+    memcpy(buf, current.msg, msg_size);
     // enviar ACK
 
-    if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) return ERROR;
+    if (make_pkt(&ack, PKT_ACK, current.h.pkt_seq, NULL, 0) < 0) return ERROR;
 
     ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
                   (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
