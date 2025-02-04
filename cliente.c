@@ -6,7 +6,7 @@
 
 #include "rdt.h"
 
-#define SIZE 1000
+#define SIZE 16
 
 int main(int argc, char **argv) {
 	if (argc != 4) {
@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
   char data[SIZE] = {0};
 	while(fgets(data, SIZE, fp) != NULL)
 	{
-		if(rdt_send(s, data, sizeof(data), &saddr) == -1)
+		if(rdt_send(s, data, SIZE, &saddr) == -1)
 		{
 			perror("error in sending data");
 			exit(1);

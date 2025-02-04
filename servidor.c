@@ -57,12 +57,14 @@ int main(int argc, char **argv) {
         if (r < 0) {
             printf("Erro ao receber mensagem.\n");
         } else {
-            msg++;
-            printf("Mensagem recebida: %d\n", msg);
+            //msg++;
+            //printf("Mensagem recebida: %s\n", msg);
             fprintf(fp, "%s", buffer);
+            printf("Mensagem recebida: %s\n", buffer);
             bzero(buffer, SIZE);
         }
     }
+    fclose(fp);
 
     return 0;
 }

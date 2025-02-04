@@ -30,6 +30,7 @@ typedef uint8_t  htype_t;
 
 hseq_t _snd_seqnum = 1;
 hseq_t _rcv_seqnum = 1;
+hseq_t _rcv_noconf = 1;
 
 // Variáveis globais para RTT
 double EstRTT = 1.0;  // Valor inicial do RTT estimado (em segundos)
@@ -160,19 +161,20 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 
     for(int it=0; it< 15; it++) {
         // Enviar pacotes enquanto houver espaço na janela estática
+        //if (packets_in_flight < WINDOW_SIZE) {
         while (packets_in_flight < WINDOW_SIZE) {
-            if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
-                return ERROR;
-            }
-            
-            // Registrar o tempo de envio
-            gettimeofday(&start, NULL);
+          if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
+              return ERROR;
+          }
+          
+          // Registrar o tempo de envio
+          gettimeofday(&start, NULL);
 
-            sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-            printf("Enviado pacote %d\n", _snd_seqnum);
-            _snd_seqnum++;
-            packets_in_flight++;
-        }
+          sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+          printf("Enviado pacote %d\n", _snd_seqnum);
+          _snd_seqnum++;
+          packets_in_flight++;
+        //}
         
         //timeout dinâmico
         struct timeval timeout;
@@ -218,7 +220,7 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
 
 		printf("pacotes nao confirmados:%d\n", packets_in_flight);
         
-    }
+    //}
 
     return buf_len;
 }
@@ -238,7 +240,6 @@ int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
 	int nr, ns;
 	int addrlen;
 
-createpck:
 	memset(&p, 0, sizeof(hdr));
   if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
 
@@ -264,11 +265,10 @@ rerecv:
 		goto rerecv;
 	}
 	
-	//printf("seq %d\n", p.h.pkt_seq);
 	enqueue(&buf_queue, p);
 
-	if(buf_queue.size < BUFFER_QUEUE_SIZE)
-		goto createpck;
+	//if(buf_queue.size < BUFFER_QUEUE_SIZE)
+		//goto createpck;
 
   while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
     pkt current = dequeue(&buf_queue);
