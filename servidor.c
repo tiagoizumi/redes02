@@ -10,21 +10,6 @@
 #define MIN 10
 #define MAX 900
 
-#define SIZE 1024
-
-void send_file(FILE *fp, int sockfd) {
-  char data[SIZE] = {0};
-	while(fgets(data, SIZE, fp)!=NULL)
-	{
-		if(send(sockfd, data, sizeof(data), 0)== -1)
-		{
-			perror("[-] Error in sendung data");
-			exit(1);
-		}
-		bzero(data, SIZE);
-	}
-}
-
 int main(int argc, char **argv) {
     if (argc != 2) {
         printf("uso: %s <porta_servidor>\n", argv[0]);
