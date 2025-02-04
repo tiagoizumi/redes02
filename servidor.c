@@ -35,36 +35,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-		FILE* fp;
-    char* filename = "teste2.txt";
-    char buffer[SIZE];
-
-    fp = fopen(filename, "w");
-
-    if(fp == NULL) {
-      perror("error in creating file");
-      exit(1);
-    }
-
     printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
 
     while (1) {
-        socklen_t caddr_len = sizeof(caddr);
+        //socklen_t caddr_len = sizeof(caddr);
 
         usleep(rand() % (MAX - MIN + 1) + MIN);
 
-        int r = rdt_recv(sockfd, buffer, caddr_len, &caddr);
+        int r = rdt_recv(sockfd, "teste2.txt", &caddr);
         if (r < 0) {
             printf("Erro ao receber mensagem.\n");
         } else {
-            //msg++;
-            //printf("Mensagem recebida: %s\n", msg);
-            fprintf(fp, "%s", buffer);
-            printf("Mensagem recebida: %s\n", buffer);
-            bzero(buffer, SIZE);
+            msg++;
+            printf("Mensagem recebida: %d\n", msg);
         }
     }
-    fclose(fp);
 
     return 0;
 }

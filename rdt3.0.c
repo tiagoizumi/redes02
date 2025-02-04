@@ -147,7 +147,13 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
 	return TRUE;
 }
 
-int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
+int rdt_send(int sockfd, const char *filename, struct sockaddr_in *dst) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("fopen");
+        return ERROR;
+    }
+
     pkt p, ack;
     struct sockaddr_in dst_ack;
     int nr, addrlen;
@@ -159,29 +165,32 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
     // Calcular Timeout Interval inicial
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
-    for(int it=0; it< 15; it++) {
-        // Enviar pacotes enquanto houver espaço na janela estática
-        //if (packets_in_flight < WINDOW_SIZE) {
-        while (packets_in_flight < WINDOW_SIZE) {
-          if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
-              return ERROR;
-          }
-          
-          // Registrar o tempo de envio
-          gettimeofday(&start, NULL);
+    unsigned char buffer[MAX_MSG_LEN];
+    int bytes_read;
 
-          sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-          printf("Enviado pacote %d\n", _snd_seqnum);
-          _snd_seqnum++;
-          packets_in_flight++;
-        //}
-        
-        //timeout dinâmico
+    while ((bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0) {
+        while (packets_in_flight < WINDOW_SIZE) {
+            if (make_pkt(&p, PKT_DATA, _snd_seqnum, buffer, bytes_read) < 0) {
+                fclose(file);
+                return ERROR;
+            }
+
+            // Registrar o tempo de envio
+            gettimeofday(&start, NULL);
+
+            sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            printf("Enviado pacote %d\n", _snd_seqnum);
+            _snd_seqnum++;
+            packets_in_flight++;
+        }
+
+        // Timeout dinâmico
         struct timeval timeout;
         timeout.tv_sec = (int)TimeoutInterval;
         timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6;
         if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             perror("rdt_send: setsockopt");
+            fclose(file);
             return ERROR;
         }
 
@@ -210,7 +219,8 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
             printf("Timeout. Retransmitindo pacotes...\n");
             // Retransmitir pacotes não confirmados
             for (hseq_t i = base; i < _snd_seqnum; i++) {
-                if (make_pkt(&p, PKT_DATA, i, buf, buf_len) < 0) {
+                if (make_pkt(&p, PKT_DATA, i, buffer, bytes_read) < 0) {
+                    fclose(file);
                     return ERROR;
                 }
                 sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
@@ -218,11 +228,11 @@ int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
             }
         }
 
-		printf("pacotes nao confirmados:%d\n", packets_in_flight);
-        
-    //}
+        printf("Pacotes não confirmados: %d\n", packets_in_flight);
+    }
 
-    return buf_len;
+    fclose(file);
+    return SUCCESS;
 }
 
 int has_dataseqnum(pkt *p, hseq_t seqnum) {
@@ -235,61 +245,72 @@ int has_dataseqnum(pkt *p, hseq_t seqnum) {
 
 queue buf_queue;
 
-int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
-	pkt p, ack;
-	int nr, ns;
-	int addrlen;
-
-	memset(&p, 0, sizeof(hdr));
-  if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
-
-rerecv:
-	addrlen = sizeof(struct sockaddr_in);
-	nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr*)src,
-		(socklen_t *)&addrlen);
-	if (nr < 0) {
-		perror("recvfrom():");
-		return ERROR;
-	}
-	int corrupted = iscorrupted(&p);
-	int dataseqnum = has_dataseqnum(&p, _rcv_seqnum);
-	if (corrupted || !dataseqnum) {
-		printf("rdt_recv: iscorrupted || has_dataseqnum \n");
-		// enviar ultimo ACK (_rcv_seqnum - 1)
-		ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
-			(struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
-		if (ns < 0) {
-			perror("rdt_rcv: sendto(PKT_ACK - 1)");
-			return ERROR;
-		}
-		goto rerecv;
-	}
-	
-	enqueue(&buf_queue, p);
-
-	//if(buf_queue.size < BUFFER_QUEUE_SIZE)
-		//goto createpck;
-
-  while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
-    pkt current = dequeue(&buf_queue);
-    int msg_size = current.h.pkt_size - sizeof(hdr);
-    if (msg_size > buf_len) {
-      printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
-        buf_len, msg_size);
-      return ERROR;
+int rdt_recv(int sockfd, const char *filename, struct sockaddr_in *src) {
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        perror("fopen");
+        return ERROR;
     }
-    memcpy(buf, current.msg, msg_size);
-    // enviar ACK
 
-    if (make_pkt(&ack, PKT_ACK, current.h.pkt_seq, NULL, 0) < 0) return ERROR;
+    pkt p, ack;
+    int nr, ns;
+    int addrlen;
 
-    ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
-                  (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
-    if (ns < 0) {
-      perror("rdt_rcv: sendto(PKT_ACK)");
-      return ERROR;
+    queue buf_queue;
+    init_queue(&buf_queue);
+
+    memset(&p, 0, sizeof(hdr));
+    if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) {
+        fclose(file);
+        return ERROR;
     }
-    _rcv_seqnum++;
-  }
-	return p.h.pkt_size - sizeof(hdr);
+
+    rerecv:
+        addrlen = sizeof(struct sockaddr_in);
+        nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr*)src, (socklen_t *)&addrlen);
+        if (nr < 0) {
+            perror("recvfrom():");
+            fclose(file);
+            return ERROR;
+        }
+
+        int corrupted = iscorrupted(&p);
+        int dataseqnum = has_dataseqnum(&p, _rcv_seqnum);
+        if (corrupted || !dataseqnum) {
+            printf("rdt_recv: iscorrupted || has_dataseqnum \n");
+            // enviar último ACK (_rcv_seqnum - 1)
+            ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+            if (ns < 0) {
+                perror("rdt_rcv: sendto(PKT_ACK - 1)");
+                fclose(file);
+                return ERROR;
+            }
+            goto rerecv;
+        }
+
+        enqueue(&buf_queue, p);
+
+        while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
+            pkt current = dequeue(&buf_queue);
+            int msg_size = current.h.pkt_size - sizeof(hdr);
+            fwrite(current.msg, 1, msg_size, file);
+            printf("sss %s\n", current.msg);
+
+            // enviar ACK
+            if (make_pkt(&ack, PKT_ACK, current.h.pkt_seq, NULL, 0) < 0) {
+                fclose(file);
+                return ERROR;
+            }
+
+            ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+            if (ns < 0) {
+                perror("rdt_rcv: sendto(PKT_ACK)");
+                fclose(file);
+                return ERROR;
+            }
+            _rcv_seqnum++;
+        }
+
+    fclose(file);
+    return SUCCESS;
 }
