@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    int sockfd, msg;
+    int sockfd;
     struct sockaddr_in saddr, caddr;
 
     sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -35,36 +35,23 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-		FILE* fp;
-    char* filename = "teste2.txt";
-    char buffer[SIZE];
-
-    fp = fopen(filename, "w");
-
-    if(fp == NULL) {
-      perror("error in creating file");
-      exit(1);
-    }
-
     printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
 
+    rdt_recv(sockfd, "teste2.txt", &caddr);
+    /*
     while (1) {
         socklen_t caddr_len = sizeof(caddr);
 
-        usleep(rand() % (MAX - MIN + 1) + MIN);
+        usleep(time * 100);
 
-        int r = rdt_recv(sockfd, buffer, caddr_len, &caddr);
+        int r = rdt_recv(sockfd, fp, &caddr);
         if (r < 0) {
             printf("Erro ao receber mensagem.\n");
         } else {
-            //msg++;
-            //printf("Mensagem recebida: %s\n", msg);
-            fprintf(fp, "%s", buffer);
-            printf("Mensagem recebida: %s\n", buffer);
-            bzero(buffer, SIZE);
+					bzero(buffer, SIZE);
         }
     }
-    fclose(fp);
+    */
 
     return 0;
 }
