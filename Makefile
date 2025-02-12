@@ -11,7 +11,7 @@ cliente: cliente.c rdt3.0.c
 
 # Run server
 run_server: servidor
-	./servidor 12345
+	./servidor 12345 teste2.txt
 
 # Run client
 run_client: cliente

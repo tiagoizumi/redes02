@@ -14,6 +14,10 @@
 #define FALSE 0
 #define SUCCESS 0
 
+#define MIN 10
+#define MAX 900
+#define SIZE 1000
+
 typedef uint16_t hsize_t;
 typedef uint16_t hcsum_t;
 typedef uint16_t hseq_t;
@@ -41,8 +45,8 @@ unsigned short checksum(unsigned short *, int);
 int iscorrupted(pkt *);
 int make_pkt(pkt *, htype_t, hseq_t, void *, int);
 int has_ackseq(pkt *, hseq_t);
-int rdt_send(int, FILE *, struct sockaddr_in *);
+int rdt_send(int, char *, struct sockaddr_in *, int, int, int);
 int has_dataseqnum(pkt *, hseq_t);
-int rdt_recv(int, char *, struct sockaddr_in *);
+int rdt_recv(int, FILE *, struct sockaddr_in *, int, int);
 
 #endif

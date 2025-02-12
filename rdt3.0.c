@@ -16,6 +16,10 @@
 #define TRUE 1
 #define FALSE 0
 
+#define AIMD_DECREASE_FACTOR 0.5
+#define AIMD_INCREMENT 1
+#define MAX_WINDOW_SIZE 16
+
 #define INIT_CWND 1
 #define MAX_CWND 16
 #define SSTHRESH 8
@@ -51,15 +55,7 @@ typedef struct pkt pkt;
 int cwnd = INIT_CWND;
 int ssthresh = SSTHRESH;
 double estRTT = 1.0, devRTT = 0.5, timeoutInterval = 1.0;
-hseq_t snd_base = 1, next_seq = 1;
 int actual_file_size = 0;
-
-int get_file_size(FILE *file) {
-  fseek(file, 0, SEEK_END);
-  int size = ftell(file);
-  rewind(file);
-  return size;
-}
 
 unsigned short checksum(unsigned short *buf, int nbytes) {
     register long sum = 0;
@@ -74,6 +70,31 @@ unsigned short checksum(unsigned short *buf, int nbytes) {
     return (unsigned short)~sum;
 }
 
+int iscorrupted(pkt *pr){
+	pkt pl = *pr;
+	pl.h.csum = 0;
+	unsigned short csuml;
+	csuml = checksum((void *)&pl, pl.h.pkt_size);
+	if (csuml != pr->h.csum){
+		return TRUE;
+	}
+	return FALSE;
+}
+
+int has_dataseqnum(pkt *p, hseq_t seqnum) {
+  //printf("%d %d %d\n", p->h.pkt_type, p->h.pkt_seq, seqnum);
+	//if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
+	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
+		return FALSE;
+	return TRUE;
+}
+
+int has_ackseq(pkt *p, hseq_t seqnum) {
+    //printf("%d %d %d\n", p->h.pkt_type, p->h.pkt_seq, seqnum);
+    //return (p->h.pkt_type == PKT_ACK && p->h.pkt_seq == seqnum);
+    return (p->h.pkt_type == PKT_ACK && p->h.pkt_seq == seqnum);
+}
+
 int make_pkt(pkt *p, htype_t type, hseq_t seqnum, char *msg, int msg_len) {
     if (msg_len > MAX_MSG_LEN) return ERROR;
     p->h.pkt_size = sizeof(hdr) + msg_len;
@@ -82,83 +103,96 @@ int make_pkt(pkt *p, htype_t type, hseq_t seqnum, char *msg, int msg_len) {
     memset(p->msg, 0, MAX_MSG_LEN);
     memcpy(p->msg, msg, msg_len);
     p->msg_len = msg_len;
-    p->h.csum = 0;
     p->h.csum = checksum((unsigned short *)p, p->h.pkt_size);
     return SUCCESS;
 }
 
-int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
-    pkt p;
+int rdt_send(int sockfd, char* msg, struct sockaddr_in *dst, int buf_len, int bytes_read, int _snd_seqnum) {
+    pkt p, ack;
     struct sockaddr_in dst_ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
     struct timeval start, end;
-    int bytes_read;
-		char msg[MAX_MSG_LEN];
-		memset(p.msg, 0, MAX_MSG_LEN);
-		memset(msg, 0, MAX_MSG_LEN);
+    int ns, nr;
 
-    while ((bytes_read = fread(msg, 1, MAX_MSG_LEN, file)) > 0) {
-        make_pkt(&p, PKT_DATA, next_seq, msg, bytes_read);
+    if (make_pkt(&p, PKT_DATA, _snd_seqnum, msg, bytes_read) < 0) 
+      return ERROR;
+    
+resend:
+    gettimeofday(&start, NULL);
+    ns = sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
 
-        gettimeofday(&start, NULL);
-        sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
-        next_seq++;
-
-		    memset(msg, 0, MAX_MSG_LEN);
-		    memset(p.msg, 0, MAX_MSG_LEN);
- 
-        pkt ack;
-        if (recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen) > 0) {
-            gettimeofday(&end, NULL);
-            double sampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-            estRTT = (1 - ALPHA) * estRTT + ALPHA * sampleRTT;
-            devRTT = (1 - BETA) * devRTT + BETA * fabs(sampleRTT - estRTT);
-            timeoutInterval = estRTT + 4 * devRTT;
-            
-            if (ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= snd_base) {
-                snd_base = ack.h.pkt_seq + 1;
-                if (cwnd < ssthresh) {
-                    cwnd++; // Crescimento exponencial
-                } else {
-                    cwnd += 1 / cwnd; // Crescimento linear
-                }
-            } else {
-							printf("ACK inesperado recebido: %d\n", ack.h.pkt_seq);
-						}
-        } else {
-            ssthresh = cwnd / 2;
-            cwnd = INIT_CWND;
-            printf("Timeout. Reduzindo cwnd para %d e ssthresh para %d\n", cwnd, ssthresh);
-        }
+    if (ns < 0) {
+      perror("rdt_send: sendto(PKT_DATA):");
+      return ERROR;
     }
-    return SUCCESS;
+    nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack,
+      (socklen_t *)&addrlen);
+    printf("%d %d\n", ack.h.pkt_seq, _snd_seqnum);
+    if (nr < 0) {
+      perror("rdt_send: recvfrom(PKT_ACK)");
+      return ERROR;
+    }
+    if (iscorrupted(&ack) || has_ackseq(&ack, _snd_seqnum) == FALSE)
+      goto resend;
+
+    if (nr > 0) {
+        gettimeofday(&end, NULL);
+        double sampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+        estRTT = (1 - ALPHA) * estRTT + ALPHA * sampleRTT;
+        devRTT = (1 - BETA) * devRTT + BETA * fabs(sampleRTT - estRTT);
+        timeoutInterval = estRTT + 4 * devRTT;
+        
+        if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK) {
+            printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
+            cwnd += AIMD_INCREMENT;
+            if (cwnd > MAX_WINDOW_SIZE) cwnd = MAX_WINDOW_SIZE;
+        }
+    } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
+      cwnd = (int)(cwnd * AIMD_DECREASE_FACTOR);
+      if (cwnd < 1) cwnd = 1;
+
+      // Retransmitir pacotes não confirmados
+      if (make_pkt(&p, PKT_DATA, _snd_seqnum, msg, bytes_read) < 0) return ERROR;
+      sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+    }
+    return buf_len;
 }
 
-int rdt_recv(int sockfd, char* namefile, struct sockaddr_in *src) {
+int rdt_recv(int sockfd, FILE* file, struct sockaddr_in *src, int buf_len, int _rcv_seqnum) {
     pkt p, ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
+    int nr, ns;
 
-		FILE* file = fopen(namefile, "a");
-		if(file < 0)
-			return ERROR;
+    if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0)
+      return ERROR;
 
-    int result, write_mode = 1;
-    while (1) {
-        int nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr *)src, &addrlen);
-        if (nr < 0 || p.h.pkt_type != PKT_DATA) break;
-        
-        result = (int)p.h.pkt_size - (int)sizeof(hdr);
-        if (result < MAX_MSG_LEN) write_mode = 0;
-        fwrite(p.msg, 1, result, file);
+rerecv:
+    nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr *)src, &addrlen);
 
-        bzero(p.msg, MAX_MSG_LEN);
-        make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0);
-        sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr *)src, addrlen);
-        printf("ACK enviado para %d\n", p.h.pkt_seq);
+    if (nr < 0) return ERROR;
 
-        if (write_mode == 0) break;
+    //printf("%d %d\n", p.h.pkt_seq, _rcv_seqnum);
+    if (iscorrupted(&p) || !has_dataseqnum(&p, _rcv_seqnum)) {
+      ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
+			(struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+      if (ns < 0) return ERROR;
+      goto rerecv;
     }
 
-    return SUCCESS;
-}
+    int msg_size = (int)p.h.pkt_size - (int)sizeof(hdr);
+    if (msg_size > buf_len) return ERROR;
 
+    fwrite(p.msg, 1, msg_size, file);
+    bzero(p.msg, MAX_MSG_LEN);
+
+    if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0)
+      return ERROR;
+
+    printf("%d %d\n", ack.h.pkt_seq, _rcv_seqnum);
+    ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
+    (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+
+    printf("ACK Enviado\n");
+    if (msg_size > buf_len) return ERROR;
+    return p.h.pkt_size - sizeof(hdr);
+}

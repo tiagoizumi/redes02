@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include "rdt.h"
 
@@ -11,7 +12,8 @@ int main(int argc, char **argv) {
 		printf("uso: %s <ip_servidor> <porta_servidor> <nome_arquivo>\n", argv[0]);
 		return 0;
 	}
-	int s;
+	int s, bytes_read, status;
+  char msg[SIZE];
 	FILE* fp;
 	struct sockaddr_in saddr;
 	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -24,14 +26,18 @@ int main(int argc, char **argv) {
 		perror("error in opening file");
 		exit(1);
 	}
+  
+  int i = 0;
 
-	if(rdt_send(s, fp, &saddr) == -1) {
-		perror("error in sending data");
-		exit(1);
-	}
-	/*
-	int msg = 1000;
-	rdt_send(s, &msg, sizeof(msg), &saddr);
-	*/
+  while((bytes_read = fread(msg, 1, SIZE, fp)) > 0) {
+    status = rdt_send(s, msg, &saddr, SIZE, bytes_read, i);
+    if(status == -1) {
+      perror("error in sending data");
+      exit(1);
+    } else i++;
+    bzero(msg, SIZE);
+    usleep(rand() % (MAX - MIN + 1) * 1000);
+  }
+  
 	return 0;
 }
