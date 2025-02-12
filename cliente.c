@@ -6,29 +6,40 @@
 
 #include "rdt.h"
 
-int main() {
-    int sockfd;
-    struct sockaddr_in server_addr;
-    char buffer[MAX_MSG_LEN];
-    int buf_len;
+#define SIZE 1024
 
-    // Configuração do socket e do servidor
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(8080); // Porta do servidor
-    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+int main(int argc, char **argv) {
+	if (argc != 3) {
+		printf("uso: %s <ip_servidor> <porta_servidor> <nome_arquivo>\n", argv[0]);
+		return 0;
+	}
+	int s;
+	FILE* fp;
+	struct sockaddr_in saddr;
+	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	saddr.sin_port = htons(atoi(argv[2]));
+	saddr.sin_family = AF_INET;
+	inet_aton(argv[1], &saddr.sin_addr);
 
-    while (1) { // Loop contínuo para envio de pacotes
-        printf("Digite a mensagem para enviar: ");
-        fgets(buffer, MAX_MSG_LEN, stdin);
-        buf_len = strlen(buffer);
+	fp = fopen(argv[3], "r");
+	if(fp == NULL) {
+		perror("error in opening file");
+		exit(1);
+	}
 
-        // Enviar a mensagem
-        rdt_send(sockfd, buffer, buf_len, &server_addr);
+  char data[SIZE] = {0};
+	while(fgets(data, SIZE, fp) != NULL)
+	{
+		if(rdt_send(s, data, sizeof(data), &saddr) == -1)
+		{
+			perror("error in sending data");
+			exit(1);
+		}
+		bzero(data, SIZE);
+	}
 
-        printf("Mensagem enviada: %s\n", buffer);
-    }
+	//int msg = 1000;
+	//rdt_send(s, &msg, sizeof(msg), &saddr);
 
-    close(sockfd);
-    return 0;
+	return 0;
 }

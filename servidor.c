@@ -7,7 +7,15 @@
 
 #include "rdt.h"
 
-int main() {
+#define MIN 10
+#define MAX 900
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        printf("uso: %s <porta_servidor>\n", argv[0]);
+        return 0;
+    }
+
     int sockfd;
     struct sockaddr_in server_addr, client_addr;
     char buffer[MAX_MSG_LEN];
@@ -19,15 +27,24 @@ int main() {
     server_addr.sin_port = htons(8080); // Porta do servidor
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (bind(sockfd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
+        perror("Erro ao fazer bind");
+        return 1;
+    }
 
-    while (1) { // Loop contínuo para receber pacotes
-        printf("Aguardando mensagem...\n");
-        buf_len = rdt_recv(sockfd, buffer, MAX_MSG_LEN, &client_addr);
+    printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
 
-        if (buf_len > 0) {
-            buffer[buf_len] = '\0';
-            printf("Mensagem recebida: %s\n", buffer);
+    while (1) {
+        int msg;
+        socklen_t caddr_len = sizeof(caddr);
+
+        usleep(rand() % (MAX - MIN + 1) + MIN);
+
+        int r = rdt_recv(sockfd, &msg, caddr_len, &caddr);
+        if (r < 0) {
+            printf("Erro ao receber mensagem.\n");
+        } else {
+            printf("Mensagem recebida: %d\n", msg);
         }
     }
 
