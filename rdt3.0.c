@@ -9,7 +9,6 @@
 #include <errno.h>
 #include <math.h>
 #include <unistd.h>
-#include "hash.h"
 
 #define MAX_MSG_LEN 1000
 #define ERROR -1
@@ -109,7 +108,7 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
     return (p->h.pkt_type == PKT_ACK && p->h.pkt_seq == seqnum);
 }
 
-int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst, char* hash) {
+int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     pkt p;
     struct sockaddr_in dst_ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
@@ -132,7 +131,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst, char* hash) {
         pkt ack;
 				nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
 				if (nr < 0) return ERROR;
-				printf("%d %d\n", iscorrupted(&ack), has_ackseq(&ack, next_seq - 1));
+				//printf("%d %d\n", iscorrupted(&ack), has_ackseq(&ack, next_seq - 1));
         if (!iscorrupted(&ack) && has_ackseq(&ack, next_seq - 1)) {
             gettimeofday(&end, NULL);
             double sampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
@@ -156,21 +155,15 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst, char* hash) {
             printf("Timeout. Reduzindo cwnd para %d e ssthresh para %d\n", cwnd, ssthresh);
         }
     }
-
-    make_pkt(&p, PKT_DATA, next_seq, hash, MAX_MSG_LEN);
-    sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
-		memset(p.msg, 0, MAX_MSG_LEN);
-    next_seq++;
-
     return SUCCESS;
 }
 
-int rdt_recv(int sockfd, char* namefile, struct sockaddr_in *src) {
+int rdt_recv(int sockfd, char* filename, struct sockaddr_in *src) {
     pkt p, ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
 		int ns;
 
-		FILE* file = fopen(namefile, "a");
+		FILE* file = fopen(filename, "a");
 		if(file < 0)
 			return ERROR;
 
@@ -198,19 +191,5 @@ int rdt_recv(int sockfd, char* namefile, struct sockaddr_in *src) {
 
         if (write_mode == 0) break;
     }
-    fclose(file);
-    file = fopen(namefile, "rb");
-
-    char original_hash[MD5_DIGEST_LENGTH];
-    calculate_md5(file, original_hash);
-    char original_hex[MD5_DIGEST_LENGTH * 2 + 1];
-    hash_to_hex(original_hash, original_hex, MD5_DIGEST_LENGTH);
-
-    recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr *)src, &addrlen);
-
-    if (strcmp(p.msg, original_hex) == 0)
-      printf("arquivos iguais\n");
-    else
-      printf("arquivos diferentes\n");
     return SUCCESS;
 }

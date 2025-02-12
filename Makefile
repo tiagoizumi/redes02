@@ -17,3 +17,5 @@ run_server: servidor
 run_client: cliente
 	./cliente 127.0.0.1 12345 teste.txt
 
+debug_client: cliente.c rdt3.0.c
+	gcc -Wall -g cliente.c rdt3.0.c hash.c && gdb a.out

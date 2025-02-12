@@ -19,19 +19,14 @@ int main(int argc, char **argv) {
 	saddr.sin_port = htons(atoi(argv[2]));
 	saddr.sin_family = AF_INET;
 	inet_aton(argv[1], &saddr.sin_addr);
-	FILE* fp = fopen(argv[3], "rb");
-
-  char original_hash[MD5_DIGEST_LENGTH];
-  calculate_md5(fp, original_hash);
-  char original_hex[MD5_DIGEST_LENGTH * 2 + 1];
-  hash_to_hex(original_hash, original_hex, MD5_DIGEST_LENGTH);
+	FILE* fp = fopen(argv[3], "r");
 
 	if(fp == NULL) {
 		perror("error in opening file");
 		exit(1);
 	}
 
-	if(rdt_send(s, fp, &saddr, original_hash) == -1) {
+	if(rdt_send(s, fp, &saddr) == -1) {
 		perror("error in sending data");
 		exit(1);
 	}

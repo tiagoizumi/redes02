@@ -1,22 +1,32 @@
-#include <openssl/md5.h>
 #include <stdio.h>
+#include <string.h>
 
-void calculate_md5(FILE* file, unsigned char *hash) {
-    MD5_CTX md5;
-    MD5_Init(&md5);
+#define MD5_HASH_SIZE 33
 
-    unsigned char buffer[4096];
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        MD5_Update(&md5, buffer, bytes_read);
+int calculate_md5(FILE* fp, char* result, char* filename) {
+    char command[256];
+    char md5_output[MD5_HASH_SIZE];
+
+    // Monta o comando para calcular o MD5
+    snprintf(command, sizeof(command), "md5sum %s 2>/dev/null | awk '{print $1}'", filename);
+
+    // Lê o hash gerado
+    if (fgets(md5_output, sizeof(md5_output), fp) == NULL) {
+        perror("Erro ao ler a saída do md5sum");
+        pclose(fp);
+        return -1;
     }
 
-    MD5_Final(hash, &md5);
+    // Remove possíveis quebras de linha no final do hash
+    md5_output[strcspn(md5_output, "\n")] = 0;
+
+    memcpy(result, md5_output, sizeof(md5_output));
+
+    return 0;
 }
 
-void hash_to_hex(unsigned char *hash, char *hex_hash, int hash_length) {
-    for (int i = 0; i < hash_length; i++) {
-        sprintf(hex_hash + (i * 2), "%02x", hash[i]);
-    }
-    hex_hash[hash_length * 2] = '\0';
+int check_md5(FILE* fp, char *expected_md5, char* filename) {
+  char result[MD5_HASH_SIZE];
+  calculate_md5(fp, result, filename);
+  return strcmp(result, expected_md5) == 0;
 }
