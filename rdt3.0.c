@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <math.h>
 #include <unistd.h>
+#include "hash.h"
 
 #define MAX_MSG_LEN 1000
 #define ERROR -1
@@ -24,6 +25,11 @@
 
 #define PKT_ACK 0
 #define PKT_DATA 1
+
+#define STATIC_WINDOW 1
+#define DYNAMIC_WINDOW 2
+#define DYNAMIC_TIMER 1
+#define STATIC_TIMER 2
 
 typedef uint16_t hsize_t;
 typedef uint16_t hcsum_t;
@@ -54,13 +60,6 @@ double estRTT = 1.0, devRTT = 0.5, timeoutInterval = 1.0;
 hseq_t snd_base = 1, next_seq = 1;
 int actual_file_size = 0;
 
-int get_file_size(FILE *file) {
-  fseek(file, 0, SEEK_END);
-  int size = ftell(file);
-  rewind(file);
-  return size;
-}
-
 unsigned short checksum(unsigned short *buf, int nbytes) {
     register long sum = 0;
     while (nbytes > 1) {
@@ -87,12 +86,35 @@ int make_pkt(pkt *p, htype_t type, hseq_t seqnum, char *msg, int msg_len) {
     return SUCCESS;
 }
 
-int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
+int iscorrupted(pkt *pr){
+	pkt pl = *pr;
+	pl.h.csum = 0;
+	unsigned short csuml;
+	csuml = checksum((void *)&pl, pl.h.pkt_size);
+	if (csuml != pr->h.csum){
+		return TRUE;
+	}
+	return FALSE;
+}
+
+int has_dataseqnum(pkt *p, hseq_t seqnum) {
+  //printf("%d %d %d\n", p->h.pkt_type, p->h.pkt_seq, seqnum);
+	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
+		return FALSE;
+	return TRUE;
+}
+
+int has_ackseq(pkt *p, hseq_t seqnum) {
+    //printf("%d %d %d\n", p->h.pkt_type, p->h.pkt_seq, seqnum);
+    return (p->h.pkt_type == PKT_ACK && p->h.pkt_seq == seqnum);
+}
+
+int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst, char* hash) {
     pkt p;
     struct sockaddr_in dst_ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
     struct timeval start, end;
-    int bytes_read;
+    int bytes_read, nr;
 		char msg[MAX_MSG_LEN];
 		memset(p.msg, 0, MAX_MSG_LEN);
 		memset(msg, 0, MAX_MSG_LEN);
@@ -108,7 +130,10 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 		    memset(p.msg, 0, MAX_MSG_LEN);
  
         pkt ack;
-        if (recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen) > 0) {
+				nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
+				if (nr < 0) return ERROR;
+				printf("%d %d\n", iscorrupted(&ack), has_ackseq(&ack, next_seq - 1));
+        if (!iscorrupted(&ack) && has_ackseq(&ack, next_seq - 1)) {
             gettimeofday(&end, NULL);
             double sampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
             estRTT = (1 - ALPHA) * estRTT + ALPHA * sampleRTT;
@@ -131,21 +156,36 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             printf("Timeout. Reduzindo cwnd para %d e ssthresh para %d\n", cwnd, ssthresh);
         }
     }
+
+    make_pkt(&p, PKT_DATA, next_seq, hash, MAX_MSG_LEN);
+    sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+		memset(p.msg, 0, MAX_MSG_LEN);
+    next_seq++;
+
     return SUCCESS;
 }
 
 int rdt_recv(int sockfd, char* namefile, struct sockaddr_in *src) {
     pkt p, ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
+		int ns;
 
 		FILE* file = fopen(namefile, "a");
 		if(file < 0)
 			return ERROR;
 
     int result, write_mode = 1;
+
     while (1) {
         int nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr *)src, &addrlen);
-        if (nr < 0 || p.h.pkt_type != PKT_DATA) break;
+        if (nr < 0 || !has_dataseqnum(&p, p.h.pkt_seq)) {
+		      make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0);
+					ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
+					(struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+
+					if (ns < 0) return ERROR;
+					continue;
+				}
         
         result = (int)p.h.pkt_size - (int)sizeof(hdr);
         if (result < MAX_MSG_LEN) write_mode = 0;
@@ -158,7 +198,19 @@ int rdt_recv(int sockfd, char* namefile, struct sockaddr_in *src) {
 
         if (write_mode == 0) break;
     }
+    fclose(file);
+    file = fopen(namefile, "rb");
 
+    char original_hash[MD5_DIGEST_LENGTH];
+    calculate_md5(file, original_hash);
+    char original_hex[MD5_DIGEST_LENGTH * 2 + 1];
+    hash_to_hex(original_hash, original_hex, MD5_DIGEST_LENGTH);
+
+    recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr *)src, &addrlen);
+
+    if (strcmp(p.msg, original_hex) == 0)
+      printf("arquivos iguais\n");
+    else
+      printf("arquivos diferentes\n");
     return SUCCESS;
 }
-

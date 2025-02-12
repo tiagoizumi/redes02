@@ -12,8 +12,8 @@
 #define SIZE 1000
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        printf("uso: %s <porta_servidor>\n", argv[0]);
+    if (argc != 3) {
+        printf("uso: %s <porta_servidor> <nome-arquivo>\n", argv[0]);
         return 0;
     }
 
@@ -37,21 +37,7 @@ int main(int argc, char **argv) {
 
     printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
 
-    rdt_recv(sockfd, "teste2.txt", &caddr);
-    /*
-    while (1) {
-        socklen_t caddr_len = sizeof(caddr);
-
-        usleep(time * 100);
-
-        int r = rdt_recv(sockfd, fp, &caddr);
-        if (r < 0) {
-            printf("Erro ao receber mensagem.\n");
-        } else {
-					bzero(buffer, SIZE);
-        }
-    }
-    */
+    rdt_recv(sockfd, argv[2], &caddr);
 
     return 0;
 }
