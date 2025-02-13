@@ -3,11 +3,11 @@ all: servidor cliente
 
 # Compile server
 servidor: servidor.c rdt3.0.c
-	gcc -Wall -g servidor.c rdt3.0.c hash.c -o servidor -lssl -lcrypto 
+	gcc -Wall -g servidor.c rdt3.0.c hash.c -o servidor 
 
 # Compile client
 cliente: cliente.c rdt3.0.c
-	gcc -Wall -g cliente.c rdt3.0.c hash.c -o cliente -lssl -lcrypto
+	gcc -Wall -g cliente.c rdt3.0.c hash.c -o cliente
 
 # Run server
 run_server: servidor

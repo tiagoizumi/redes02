@@ -3,10 +3,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <openssl/md5.h>
 
 #include "rdt.h"
-#include "hash.h"
 
 int main(int argc, char **argv) {
 	if (argc != 4) {
