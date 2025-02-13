@@ -225,7 +225,6 @@ int has_dataseqnum(pkt *p, hseq_t seqnum) {
 	return TRUE;
 }
 
-queue buf_queue;
 
 int rdt_recv(int sockfd, struct sockaddr_in *src) {
     pkt p, ack;
