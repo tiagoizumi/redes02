@@ -31,6 +31,9 @@
 #define DYNAMIC_TIMER 1
 #define STATIC_TIMER 2
 
+#define STATIC_CWND 4
+#define STATIC_TIMEOUT 1
+
 typedef uint16_t hsize_t;
 typedef uint16_t hcsum_t;
 typedef uint16_t hseq_t;
@@ -54,7 +57,6 @@ struct pkt {
 
 typedef struct pkt pkt;
 
-pkt rcv_buffer[MAX_SEQ_NUM];
 pkt snd_buffer[MAX_SEQ_NUM];
 
 // Variáveis de controle da janela
@@ -118,7 +120,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     struct sockaddr_in dst_ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
     struct timeval start, end;
-    int bytes_read, nr, i;
+    int bytes_read, nr, i, timeout_m = DYNAMIC_TIMER, cwnd_m = DYNAMIC_WINDOW;
 		char msg[MAX_MSG_LEN];
 		memset(p.msg, 0, MAX_MSG_LEN);
 		memset(msg, 0, MAX_MSG_LEN);
@@ -138,9 +140,16 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
           if (next_seq < MAX_SEQ_NUM - 1) continue;
         }
 
-        for (i = snd_base; i < next_seq && i < snd_base + cwnd; i++) {
-          sendto(sockfd, &snd_buffer[i], snd_buffer[i].h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
-          printf("pacote env %d\n", i);
+        if (cwnd_m == DYNAMIC_WINDOW) {
+          for (i = snd_base; i < next_seq && i < snd_base + cwnd; i++) {
+            sendto(sockfd, &snd_buffer[i], snd_buffer[i].h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+            //printf("pacote env %d\n", i);
+          }
+        } else {
+           for (i = snd_base; i < next_seq && i < snd_base + STATIC_CWND; i++) {
+            sendto(sockfd, &snd_buffer[i], snd_buffer[i].h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+            //printf("pacote env %d\n", i);
+          }       
         }
 
         if (i == next_seq) {
@@ -149,8 +158,14 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
         }
  
         struct timeval timeout;
-        timeout.tv_sec = (int)timeoutInterval;
-        timeout.tv_usec = (timeoutInterval - timeout.tv_sec) * 1e6;
+        if (timeout_m == DYNAMIC_TIMER) {
+          timeout.tv_sec = (int)timeoutInterval;
+          timeout.tv_usec = (timeoutInterval - timeout.tv_sec) * 1e6;
+        } else { // STATIC_TIMER
+          timeout.tv_sec = STATIC_TIMEOUT;
+          timeout.tv_usec = 0;
+        }
+
         if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             perror("rdt_send: setsockopt");
             return ERROR;
