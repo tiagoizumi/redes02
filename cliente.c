@@ -9,38 +9,58 @@
 #define MIN 10000
 #define MAX 900000
 
+#define PART_SENT  1
+#define FILE_DONE  0
+#define SEND_ERROR -1
+
 int main(int argc, char **argv) {
     if (argc != 4) {
-        printf("Uso: %s <ip_servidor> <porta_servidor> <arquivo>\n", argv[0]);
-        return 0;
+        fprintf(stderr, "Usage: %s <server_ip> <server_port> <file>\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
-    int sockfd;
-    struct sockaddr_in server_addr;
-    FILE *file;
-
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
-        perror("Erro ao criar socket");
-        return 1;
+        perror("socket");
+        return EXIT_FAILURE;
     }
 
+    struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(atoi(argv[2]));
-    inet_aton(argv[1], &server_addr.sin_addr);
-
-    file = fopen(argv[3], "r");
-    if (file == NULL) {
-        perror("Erro ao abrir arquivo");
-        return 1;
+    if (inet_aton(argv[1], &server_addr.sin_addr) == 0) {
+        fprintf(stderr, "Invalid IP address.\n");
+        close(sockfd);
+        return EXIT_FAILURE;
     }
 
-    printf("Enviando arquivo: %s\n", argv[3]);
-	usleep(rand() % (MAX - MIN + 1) + MIN);
-	printf("asdasd ");
-    rdt_send(sockfd, file, &server_addr);
+    FILE *file = fopen(argv[3], "r");
+    if (!file) {
+        perror("fopen");
+        close(sockfd);
+        return EXIT_FAILURE;
+    }
+
+    printf("Sending file: %s\n", argv[3]);
+
+    int send_status;
+    do {
+        send_status = rdt_send(sockfd, file, &server_addr);
+        if (send_status == SEND_ERROR) {
+            fprintf(stderr, "Error during transmission.\n");
+            break;
+        }
+        // Wait 100 ms before sending the next part
+		float delay = (rand() % (MAX - MIN + 1) + MIN);
+		printf("delay: %f\n",delay);
+		usleep(delay);
+    } while (send_status == PART_SENT);
+
+    if (send_status == FILE_DONE) {
+        printf("File transmission completed successfully.\n");
+    }
 
     fclose(file);
     close(sockfd);
-    return 0;
+    return EXIT_SUCCESS;
 }
