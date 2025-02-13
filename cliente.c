@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(atoi(argv[2]));
     if (inet_aton(argv[1], &server_addr.sin_addr) == 0) {
-        fprintf(stderr, "Invalid IP address.\n");
+        fprintf(stderr, "ip invalido.\n");
         close(sockfd);
         return EXIT_FAILURE;
     }
@@ -41,23 +41,23 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    printf("Sending file: %s\n", argv[3]);
+    printf("enviando arquivos: %s\n", argv[3]);
 
     int send_status;
     do {
         send_status = rdt_send(sockfd, file, &server_addr);
         if (send_status == SEND_ERROR) {
-            fprintf(stderr, "Error during transmission.\n");
+            fprintf(stderr, "erro durante transmissao.\n");
             break;
         }
-        // Wait 100 ms before sending the next part
+        // entre 10 ms e 900 ms 
 		float delay = (rand() % (MAX - MIN + 1) + MIN);
 		printf("delay: %f\n",delay);
 		usleep(delay);
     } while (send_status == PART_SENT);
 
     if (send_status == FILE_DONE) {
-        printf("File transmission completed successfully.\n");
+        printf("arquivo transmitido corretametne.\n");
     }
 
     fclose(file);
