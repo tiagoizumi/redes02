@@ -118,7 +118,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     struct sockaddr_in dst_ack;
     socklen_t addrlen = sizeof(struct sockaddr_in);
     struct timeval start, end;
-    int bytes_read, nr;
+    int bytes_read, nr, i;
 		char msg[MAX_MSG_LEN];
 		memset(p.msg, 0, MAX_MSG_LEN);
 		memset(msg, 0, MAX_MSG_LEN);
@@ -129,17 +129,24 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
           make_pkt(&p, PKT_DATA, next_seq, msg, bytes_read);
           snd_buffer[next_seq] = p;
           gettimeofday(&start, NULL);
-          sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+          //sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
           next_seq++;
           memset(msg, 0, MAX_MSG_LEN);
           memset(p.msg, 0, MAX_MSG_LEN);
-
           gettimeofday(&start, NULL);
-        }
-        if (bytes_read > 0 && next_seq < MAX_SEQ_NUM - 1) continue;
 
-        memset(snd_buffer, 0, sizeof(snd_buffer));
-        next_seq = 0;
+          if (next_seq < MAX_SEQ_NUM - 1) continue;
+        }
+
+        for (i = snd_base; i < next_seq && i < snd_base + cwnd; i++) {
+          sendto(sockfd, &snd_buffer[i], snd_buffer[i].h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+          printf("pacote env %d\n", i);
+        }
+
+        if (i == next_seq) {
+          memset(snd_buffer, 0, sizeof(snd_buffer));
+          next_seq = 0;
+        }
  
         struct timeval timeout;
         timeout.tv_sec = (int)timeoutInterval;
@@ -151,7 +158,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 
         pkt ack;
 				nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
-        printf("%d\n", cwnd);
+        //printf("%d\n", cwnd);
 
         if (nr > 0) {
             gettimeofday(&end, NULL);
