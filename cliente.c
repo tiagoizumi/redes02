@@ -3,43 +3,44 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include "rdt.h"
-
-#define SIZE 1024
+#define MIN 10000
+#define MAX 900000
 
 int main(int argc, char **argv) {
-	if (argc != 3) {
-		printf("uso: %s <ip_servidor> <porta_servidor> <nome_arquivo>\n", argv[0]);
-		return 0;
-	}
-	int s;
-	FILE* fp;
-	struct sockaddr_in saddr;
-	s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	saddr.sin_port = htons(atoi(argv[2]));
-	saddr.sin_family = AF_INET;
-	inet_aton(argv[1], &saddr.sin_addr);
+    if (argc != 4) {
+        printf("Uso: %s <ip_servidor> <porta_servidor> <arquivo>\n", argv[0]);
+        return 0;
+    }
 
-	fp = fopen(argv[3], "r");
-	if(fp == NULL) {
-		perror("error in opening file");
-		exit(1);
-	}
+    int sockfd;
+    struct sockaddr_in server_addr;
+    FILE *file;
 
-  char data[SIZE] = {0};
-	while(fgets(data, SIZE, fp) != NULL)
-	{
-		if(rdt_send(s, data, sizeof(data), &saddr) == -1)
-		{
-			perror("error in sending data");
-			exit(1);
-		}
-		bzero(data, SIZE);
-	}
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("Erro ao criar socket");
+        return 1;
+    }
 
-	//int msg = 1000;
-	//rdt_send(s, &msg, sizeof(msg), &saddr);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(atoi(argv[2]));
+    inet_aton(argv[1], &server_addr.sin_addr);
 
-	return 0;
+    file = fopen(argv[3], "r");
+    if (file == NULL) {
+        perror("Erro ao abrir arquivo");
+        return 1;
+    }
+
+    printf("Enviando arquivo: %s\n", argv[3]);
+	usleep(rand() % (MAX - MIN + 1) + MIN);
+	printf("asdasd ");
+    rdt_send(sockfd, file, &server_addr);
+
+    fclose(file);
+    close(sockfd);
+    return 0;
 }

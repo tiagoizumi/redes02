@@ -1,19 +1,20 @@
-# Compiler and flags
+CC = gcc
+CFLAGS = -Wall -g
+
 all: servidor cliente
 
-# Compile server
-servidor: servidor.c rdt3.0.c
-	gcc -Wall -g servidor.c rdt3.0.c -o servidor
+server: servidor.c rdt3.0.c
+	$(CC) $(CFLAGS) servidor.c rdt3.0.c -o servidor
 
-# Compile client
-cliente: cliente.c rdt3.0.c
-	gcc -Wall -g cliente.c rdt3.0.c -o cliente
+client: cliente.c rdt3.0.c
+	$(CC) $(CFLAGS) cliente.c rdt3.0.c -o cliente
 
-# Run server
 run_server: servidor
 	./servidor 12345
 
-# Run client
-run_client: cliente
-	./cliente 127.0.0.1 12345
 
+run_client: cliente
+	./cliente 127.0.0.1 12345 data2.txt
+
+clean:
+	rm -f servidor cliente

@@ -9,14 +9,14 @@
 #include <errno.h>
 #include <math.h>
 
-#define MAX_MSG_LEN 1000
+#define MAX_MSG_LEN 16
 #define ERROR -1
 #define TRUE 1
 #define FALSE 0
 #define SUCCESS 0
 #define WINDOW_SIZE 4 
 
-#define BUFFER_SIZE 10
+#define BUFFER_SIZE 32
 
 int biterror_inject = FALSE;
 
@@ -140,83 +140,84 @@ int has_ackseq(pkt *p, hseq_t seqnum) {
 	return TRUE;
 }
 
-int rdt_send(int sockfd, void *buf, int buf_len, struct sockaddr_in *dst) {
+int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     pkt p, ack;
     struct sockaddr_in dst_ack;
     int nr, addrlen;
     struct timeval start, end;
     double SampleRTT, TimeoutInterval;
-    int packets_in_flight = 0; // Pacotes não confirmados
-    hseq_t base = _snd_seqnum; // Base da janela
+    int packets_in_flight = 0;
+    hseq_t base = _snd_seqnum;
+    char buffer[MAX_MSG_LEN];  // Buffer de leitura do arquivo
+    int bytes_read;
 
-    // Calcular Timeout Interval inicial
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
-    for(int it=0; it<15; it++) {
-		// sleep(1);
+    // **Ler e enviar o arquivo em pacotes**
+    while ((bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0 || packets_in_flight > 0) {
         // Enviar pacotes enquanto houver espaço na janela estática
-        while (packets_in_flight < WINDOW_SIZE) {
-            if (make_pkt(&p, PKT_DATA, _snd_seqnum, buf, buf_len) < 0) {
+        while (packets_in_flight < WINDOW_SIZE && bytes_read > 0) {
+            // **Garantir que o buffer do pacote esteja limpo**
+            memset(p.msg, 0, MAX_MSG_LEN);
+
+            if (make_pkt(&p, PKT_DATA, _snd_seqnum, buffer, bytes_read) < 0) {
                 return ERROR;
             }
-            
-            // Registrar o tempo de envio
-            gettimeofday(&start, NULL);
 
+            // **Imprime o conteúdo correto do pacote antes de enviar 🔹**
+            printf("Enviando pacote %d (%d bytes): [", _snd_seqnum, bytes_read);
+            for (int i = 0; i < bytes_read; i++) {
+                printf("%c", buffer[i]);  // Exibir corretamente os caracteres
+            }
+            printf("]\n");
+
+            gettimeofday(&start, NULL);
             sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-            printf("Enviado pacote %d\n", _snd_seqnum);
             _snd_seqnum++;
             packets_in_flight++;
+
+            // ** Limpar buffer antes de ler mais caracteres**
+            memset(buffer, 0, MAX_MSG_LEN);
+            bytes_read = fread(buffer, 1, MAX_MSG_LEN, file);
         }
-        
-        //timeout dinâmico
+
+        // Configurar timeout dinâmico
         struct timeval timeout;
         timeout.tv_sec = (int)TimeoutInterval;
         timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-            perror("rdt_send: setsockopt");
-            return ERROR;
-        }
+        setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
-        // Aguardar ACKs
         addrlen = sizeof(struct sockaddr_in);
         nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, (socklen_t *)&addrlen);
 
         if (nr > 0) {
             gettimeofday(&end, NULL);
-
             SampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
-
             EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
             DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
-
             TimeoutInterval = EstRTT + 4 * DevRTT;
-            printf("Timeout atualizado: %f segundos\n", TimeoutInterval);
 
             if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= base) {
                 printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
-                // Avançar a base da janela e ajustar pacotes em voo
                 packets_in_flight -= (ack.h.pkt_seq - base + 1);
                 base = ack.h.pkt_seq + 1;
             }
         } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
             printf("Timeout. Retransmitindo pacotes...\n");
-            // Retransmitir pacotes não confirmados
             for (hseq_t i = base; i < _snd_seqnum; i++) {
-                if (make_pkt(&p, PKT_DATA, i, buf, buf_len) < 0) {
+                if (make_pkt(&p, PKT_DATA, i, buffer, bytes_read) < 0) {
                     return ERROR;
                 }
                 sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
                 printf("Retransmitido pacote %d\n", i);
             }
         }
-
-		printf("pacotes nao confirmados:%d\n", packets_in_flight);
-        
     }
 
-    return buf_len;
+    return SUCCESS;
 }
+
+
 
 int has_dataseqnum(pkt *p, hseq_t seqnum) {
 	if (p->h.pkt_seq != seqnum || p->h.pkt_type != PKT_DATA)
@@ -226,55 +227,109 @@ int has_dataseqnum(pkt *p, hseq_t seqnum) {
 
 queue buf_queue;
 
-int rdt_recv(int sockfd, void *buf, int buf_len, struct sockaddr_in *src) {
-	pkt p, ack;
-	int nr, ns;
-	int addrlen;
-	memset(&p, 0, sizeof(hdr));
-  if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) return ERROR;
+int rdt_recv(int sockfd, struct sockaddr_in *src) {
+    pkt p, ack;
+    int nr, ns;
+    int addrlen;
+    FILE *fp;
+    
+    memset(&p, 0, sizeof(pkt));
 
-rerecv:
-	addrlen = sizeof(struct sockaddr_in);
-	nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr*)src,
-		(socklen_t *)&addrlen);
-	if (nr < 0) {
-		perror("recvfrom():");
-		return ERROR;
-	}
-	if (iscorrupted(&p) || !has_dataseqnum(&p, _rcv_seqnum)) {
-		printf("rdt_recv: iscorrupted || has_dataseqnum \n");
-		// enviar ultimo ACK (_rcv_seqnum - 1)
-		ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
-			(struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
-		if (ns < 0) {
-			perror("rdt_rcv: sendto(PKT_ACK - 1)");
-			return ERROR;
-		}
-		goto rerecv;
-	}
-  
-	enqueue(&buf_queue, p);
+    // **Criar um pacote ACK com o último número de sequência correto**
+    if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) 
+        return ERROR;
 
-  while (!is_empty(&buf_queue) && buf_queue.start->data.h.pkt_seq == _rcv_seqnum) {
-    dequeue(&buf_queue);
-    int msg_size = p.h.pkt_size - sizeof(hdr);
-    if (msg_size > buf_len) {
-      printf("rdt_rcv(): tamanho insuficiente de buf (%d) para payload (%d).\n", 
-        buf_len, msg_size);
-      return ERROR;
+    // **Abrir o arquivo de saída**
+    fp = fopen("output.txt", "w");
+    if (fp == NULL) {
+        perror("Erro ao abrir output.txt");
+        return ERROR;
     }
-    memcpy(buf, p.msg, msg_size);
-    // enviar ACK
 
-    if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) return ERROR;
+    printf("Recebendo arquivo e salvando em output.txt...\n");
 
-    ns = sendto(sockfd, &ack, ack.h.pkt_size, 0,
-                  (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
-    if (ns < 0) {
-      perror("rdt_rcv: sendto(PKT_ACK)");
-      return ERROR;
+    while (1) { // **Loop infinito até o arquivo ser completamente recebido**
+        addrlen = sizeof(struct sockaddr_in);
+        nr = recvfrom(sockfd, &p, sizeof(pkt), 0, (struct sockaddr*)src, (socklen_t *)&addrlen);
+
+        if (nr < 0) {
+            perror("recvfrom():");
+            fclose(fp);
+            return ERROR;
+        }
+
+        // **Verifica se é um pacote de fim de arquivo**
+        if (p.h.pkt_size == sizeof(hdr) && p.h.pkt_type == PKT_DATA) {
+            printf("Fim da transmissão recebido. Encerrando.\n");
+            break;
+        }
+
+        // **Verifica se o pacote já foi processado**
+        if (p.h.pkt_seq < _rcv_seqnum) {
+            printf("Pacote duplicado %d recebido. Enviando ACK novamente.\n", p.h.pkt_seq);
+            
+            // **Reenviar ACK**
+            if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) {
+                fclose(fp);
+                return ERROR;
+            }
+
+            ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, 
+                        (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+
+            if (ns < 0) {
+                perror("rdt_recv: sendto(PKT_ACK)");
+                fclose(fp);
+                return ERROR;
+            }
+
+            continue;
+        }
+
+        // **Verifica se o pacote está corrompido**
+        if (iscorrupted(&p)) {
+            printf("Pacote corrompido (seq %d). Enviando último ACK (%d).\n", p.h.pkt_seq, _rcv_seqnum - 1);
+            ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+            if (ns < 0) {
+                perror("rdt_recv: sendto(PKT_ACK - 1)");
+                fclose(fp);
+                return ERROR;
+            }
+            continue;
+        }
+
+        // **Processar e imprimir os dados do pacote**
+        int msg_size = p.h.pkt_size - sizeof(hdr);
+        printf("Pacote recebido %d (%d bytes): ", p.h.pkt_seq, msg_size);
+        for (int i = 0; i < msg_size; i++) {
+            printf("%c", p.msg[i]);
+        }
+        printf("\n");
+
+        // **Salvar no arquivo**
+        fwrite(p.msg, 1, msg_size, fp);
+        fflush(fp);
+
+        // **Enviar ACK**
+        if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) {
+            fclose(fp);
+            return ERROR;
+        }
+
+        ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, (socklen_t)sizeof(struct sockaddr_in));
+        if (ns < 0) {
+            perror("rdt_recv: sendto(PKT_ACK)");
+            fclose(fp);
+            return ERROR;
+        }
+
+        printf("ACK enviado para o pacote %d\n", p.h.pkt_seq);
+        _rcv_seqnum++;
     }
-    _rcv_seqnum++;
-  }
-	return p.h.pkt_size - sizeof(hdr);
+
+    fclose(fp);
+    printf("Arquivo salvo como output.txt\n");
+    return SUCCESS;
 }
+
+
