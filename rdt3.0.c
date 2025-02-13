@@ -10,11 +10,12 @@
 #include <math.h>
 #include <unistd.h>
 
-#define MAX_MSG_LEN 1000
+#define MAX_MSG_LEN 1500
 #define ERROR -1
 #define SUCCESS 0
 #define TRUE 1
 #define FALSE 0
+#define MAX_SEQ_NUM 16
 
 #define INIT_CWND 1
 #define MAX_CWND 16
@@ -48,15 +49,19 @@ struct pkt {
     hdr h;
     unsigned char msg[MAX_MSG_LEN];
     unsigned int msg_len;
+    unsigned int status;
 };
 
 typedef struct pkt pkt;
+
+pkt rcv_buffer[MAX_SEQ_NUM];
+pkt snd_buffer[MAX_SEQ_NUM];
 
 // Variáveis de controle da janela
 int cwnd = INIT_CWND;
 int ssthresh = SSTHRESH;
 double estRTT = 1.0, devRTT = 0.5, timeoutInterval = 1.0;
-hseq_t snd_base = 1, next_seq = 1;
+hseq_t snd_base = 0, next_seq = 0;
 int actual_file_size = 0;
 
 unsigned short checksum(unsigned short *buf, int nbytes) {
@@ -118,37 +123,51 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 		memset(p.msg, 0, MAX_MSG_LEN);
 		memset(msg, 0, MAX_MSG_LEN);
 
-    while ((bytes_read = fread(msg, 1, MAX_MSG_LEN, file)) > 0) {
-        make_pkt(&p, PKT_DATA, next_seq, msg, bytes_read);
+    while (1) {
+        bytes_read = fread(msg, 1, MAX_MSG_LEN, file);
+        if (bytes_read > 0) {
+          make_pkt(&p, PKT_DATA, next_seq, msg, bytes_read);
+          snd_buffer[next_seq] = p;
+          gettimeofday(&start, NULL);
+          sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
+          next_seq++;
+          memset(msg, 0, MAX_MSG_LEN);
+          memset(p.msg, 0, MAX_MSG_LEN);
 
-        gettimeofday(&start, NULL);
-        sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, addrlen);
-        next_seq++;
+          gettimeofday(&start, NULL);
+        }
+        if (bytes_read > 0 && next_seq < MAX_SEQ_NUM - 1) continue;
 
-		    memset(msg, 0, MAX_MSG_LEN);
-		    memset(p.msg, 0, MAX_MSG_LEN);
+        memset(snd_buffer, 0, sizeof(snd_buffer));
+        next_seq = 0;
  
+        struct timeval timeout;
+        timeout.tv_sec = (int)timeoutInterval;
+        timeout.tv_usec = (timeoutInterval - timeout.tv_sec) * 1e6;
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+            perror("rdt_send: setsockopt");
+            return ERROR;
+        }
+
         pkt ack;
 				nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
-				if (nr < 0) return ERROR;
-				//printf("%d %d\n", iscorrupted(&ack), has_ackseq(&ack, next_seq - 1));
-        if (!iscorrupted(&ack) && has_ackseq(&ack, next_seq - 1)) {
+
+        if (nr > 0) {
             gettimeofday(&end, NULL);
             double sampleRTT = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
             estRTT = (1 - ALPHA) * estRTT + ALPHA * sampleRTT;
             devRTT = (1 - BETA) * devRTT + BETA * fabs(sampleRTT - estRTT);
             timeoutInterval = estRTT + 4 * devRTT;
             
-            if (ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= snd_base) {
-                snd_base = ack.h.pkt_seq + 1;
-                if (cwnd < ssthresh) {
-                    cwnd++; // Crescimento exponencial
-                } else {
-                    cwnd += 1 / cwnd; // Crescimento linear
-                }
-            } else {
-							printf("ACK inesperado recebido: %d\n", ack.h.pkt_seq);
-						}
+            if (!iscorrupted(&ack) && has_ackseq(&ack, snd_base)) {
+              if (ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= snd_base) {
+                  snd_base = ack.h.pkt_seq + 1;
+                  if (cwnd < ssthresh) cwnd++; // Crescimento exponencial
+                  else cwnd += 1 / cwnd; // Crescimento linear
+              } else {
+                printf("ACK inesperado recebido: %d\n", ack.h.pkt_seq);
+              }
+            }
         } else {
             ssthresh = cwnd / 2;
             cwnd = INIT_CWND;
