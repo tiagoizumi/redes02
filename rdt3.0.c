@@ -22,9 +22,6 @@
 
 #define BUFFER_SIZE 32
 
-#define MIN 10000000
-#define MAX 900000000
-
 int biterror_inject = FALSE;
 
 typedef uint16_t hsize_t;
@@ -38,8 +35,8 @@ typedef uint8_t  htype_t;
 hseq_t _snd_seqnum = 1;
 hseq_t _rcv_seqnum = 1;
 
-double EstRTT = 0.0001;  
-double DevRTT = 0.0001;  
+double EstRTT = 0.1;  
+double DevRTT = 0.5;  
 double alpha = 0.125; 
 double beta = 0.25;   
 
@@ -167,14 +164,11 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     double TimeoutInterval = EstRTT + 4 * DevRTT;
     
     // Contador para limitar a duração do loop (para evitar loops infinitos)
-    int loop_counter = 0;
-    const int MAX_LOOP_COUNT = 1000;
 
-    while (loop_counter < MAX_LOOP_COUNT) {
-        loop_counter++;
-
+    while (1) {
+        bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)
         // 1. Envia pacotes enquanto houver espaço na janela e dados para ler do arquivo
-        while (packets_in_flight < WINDOW_SIZE && (bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0) {
+        while (packets_in_flight < WINDOW_SIZE && bytes_read > 0) {
             int index = (_snd_seqnum % WINDOW_SIZE);
             
             if (make_pkt(&sent_packets[index], PKT_DATA, _snd_seqnum, buffer, bytes_read) < 0)
