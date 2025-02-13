@@ -17,6 +17,7 @@
 #define PART_SENT  1
 #define FILE_DONE  0
 #define SEND_ERROR -1
+#define INIT_WINDOW_SIZE 1  // Tamanho inicial da janela de congestionamento
 
 typedef uint16_t hsize_t;
 typedef uint16_t hcsum_t;
@@ -102,6 +103,8 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     static pkt sent_packets[WINDOW_SIZE];
     static int sent_sizes[WINDOW_SIZE];
     static struct timeval sent_time[WINDOW_SIZE];
+    static int cwnd = INIT_WINDOW_SIZE;
+    static int dup_ack_count = 0;       // Contador de ACKs duplicados
 
     if (!state_initialized) {
         base = _snd_seqnum;
@@ -111,7 +114,8 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     }
 
     // Envio de pacotes dentro da janela
-    while (packets_in_flight < WINDOW_SIZE && !file_end) {
+    // cwnd = WINDOW_SIZE;
+    while (packets_in_flight < cwnd && !file_end) {
         char data_buffer[MAX_MSG_LEN];
         int bytes_read = fread(data_buffer, 1, MAX_MSG_LEN, file);
         
@@ -125,7 +129,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
         if (make_pkt(&p, PKT_DATA, _snd_seqnum, data_buffer, bytes_read) < 0)
             return SEND_ERROR;
 
-        int index = _snd_seqnum % WINDOW_SIZE;
+        int index = _snd_seqnum % cwnd;
         sent_packets[index] = p;
         sent_sizes[index] = bytes_read;
         gettimeofday(&sent_time[index], NULL);
@@ -163,8 +167,35 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             int num_acked = (ack.h.pkt_seq - base) + 1;
             packets_in_flight -= num_acked;
             base = ack.h.pkt_seq + 1;
+            if (cwnd < ssthresh) {
+                cwnd += num_acked;  // Slow Start
+            } else {
+                cwnd += 1.0 / cwnd;  // Congestion Avoidance
+            }
+            dup_ack_count = 0;
+        } else {
+            dup_ack_count++;
+            if (dup_ack_count == 3) {
+                // Fast Retransmit
+                ssthresh = cwnd / 2;
+                cwnd = ssthresh + 3;
+                // Reenvia o pacote perdido
+                int lost_index = ack.h.pkt_seq % cwnd;
+                sendto(sockfd, &sent_packets[lost_index], sent_sizes[lost_index], 0,
+                       (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            }
         }
-    } 
+    } else if (nr < 0 && errno == EAGAIN) {
+        // Timeout: Reduz a janela de congestionamento
+        ssthresh = cwnd / 2;
+        cwnd = INIT_WINDOW_SIZE;
+        dup_ack_count = 0;
+        // Reenvia todos os pacotes na janela
+        for (int i = 0; i < cwnd; i++) {
+            sendto(sockfd, &sent_packets[i], sent_sizes[i], 0,
+                   (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+        }
+    }
 
     // Envio do pacote de término
     if (file_end && packets_in_flight == 0) {
@@ -206,6 +237,25 @@ int rdt_recv(int sockfd, struct sockaddr_in *src) {
             fwrite(p.msg, 1, msg_size, fp);
             fflush(fp);
         }
+				
+				_rcv_seqnum++;
+				
+				if (p.h.pkt_seq != _rcv_seqnum) {
+          printf("%d %d", p.h.pkt_seq, _rcv_seqnum);
+          if (make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0) < 0) {
+            fclose(fp);
+            return ERROR;
+          }
+
+          ns = sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, sizeof(struct sockaddr_in));
+
+          if (ns < 0) {
+            perror("package out-of-order");
+            return ERROR;
+          }
+
+          continue;
+				}
 
         if (make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0) < 0) break;
         sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, sizeof(struct sockaddr_in));
