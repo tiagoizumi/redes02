@@ -151,6 +151,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 
         pkt ack;
 				nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
+        printf("%d\n", cwnd);
 
         if (nr > 0) {
             gettimeofday(&end, NULL);
@@ -210,5 +211,6 @@ int rdt_recv(int sockfd, char* filename, struct sockaddr_in *src) {
 
         if (write_mode == 0) break;
     }
+    fclose(file);
     return SUCCESS;
 }

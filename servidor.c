@@ -37,7 +37,9 @@ int main(int argc, char **argv) {
 
     printf("Servidor aguardando mensagens na porta %s...\n", argv[1]);
 
-    rdt_recv(sockfd, argv[2], &caddr);
+    while(1) {
+      rdt_recv(sockfd, argv[2], &caddr);
+    }
 
     return 0;
 }
