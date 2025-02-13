@@ -153,31 +153,38 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 
     TimeoutInterval = EstRTT + 4 * DevRTT;
 
+    // Criar um buffer circular para armazenar pacotes não confirmados
+    pkt sent_packets[WINDOW_SIZE];
+    int sent_sizes[WINDOW_SIZE];  // Para armazenar o tamanho real dos pacotes
+
     // **Ler e enviar o arquivo em pacotes**
     while ((bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0 || packets_in_flight > 0) {
         // Enviar pacotes enquanto houver espaço na janela estática
         while (packets_in_flight < WINDOW_SIZE && bytes_read > 0) {
-            // **Garantir que o buffer do pacote esteja limpo**
-            memset(p.msg, 0, MAX_MSG_LEN);
+            memset(p.msg, 0, MAX_MSG_LEN);  // Garantir buffer limpo
 
             if (make_pkt(&p, PKT_DATA, _snd_seqnum, buffer, bytes_read) < 0) {
                 return ERROR;
             }
 
-            // **Imprime o conteúdo correto do pacote antes de enviar 🔹**
+            // **Armazena o pacote no buffer circular**
+            int index = _snd_seqnum % WINDOW_SIZE;
+            sent_packets[index] = p;
+            sent_sizes[index] = bytes_read; // Armazena o tamanho real do pacote
+
+            // **Imprime o conteúdo do pacote antes de enviar**
             printf("Enviando pacote %d (%d bytes): [", _snd_seqnum, bytes_read);
             for (int i = 0; i < bytes_read; i++) {
-                printf("%c", buffer[i]);  // Exibir corretamente os caracteres
+                printf("%c", buffer[i]);
             }
             printf("]\n");
 
             gettimeofday(&start, NULL);
             sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-            _snd_seqnum++;
+            _snd_seqnum++;  // Agora pode avançar a sequência
             packets_in_flight++;
 
-            // ** Limpar buffer antes de ler mais caracteres**
-            memset(buffer, 0, MAX_MSG_LEN);
+            memset(buffer, 0, MAX_MSG_LEN);  // Limpar buffer antes de ler mais caracteres
             bytes_read = fread(buffer, 1, MAX_MSG_LEN, file);
         }
 
@@ -197,18 +204,23 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
             TimeoutInterval = EstRTT + 4 * DevRTT;
 
-            if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK && ack.h.pkt_seq >= base) {
+            if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK) {
                 printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
-                packets_in_flight -= (ack.h.pkt_seq - base + 1);
-                base = ack.h.pkt_seq + 1;
+
+                // **Avançar base apenas se for um ACK esperado**
+                if (ack.h.pkt_seq >= base) {
+                    int num_acked = (ack.h.pkt_seq - base) + 1;
+                    packets_in_flight -= num_acked;  // Apenas os pacotes corretamente confirmados são removidos
+                    base = ack.h.pkt_seq + 1;
+                }
             }
         } else if (errno == EWOULDBLOCK || errno == EAGAIN) {
             printf("Timeout. Retransmitindo pacotes...\n");
+
+            // **Retransmitir todos os pacotes não confirmados**
             for (hseq_t i = base; i < _snd_seqnum; i++) {
-                if (make_pkt(&p, PKT_DATA, i, buffer, bytes_read) < 0) {
-                    return ERROR;
-                }
-                sendto(sockfd, &p, p.h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+                int index = i % WINDOW_SIZE;
+                sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
                 printf("Retransmitido pacote %d\n", i);
             }
         }
@@ -216,6 +228,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
 
     return SUCCESS;
 }
+
 
 
 
