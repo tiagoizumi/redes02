@@ -188,9 +188,8 @@ int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *d
         FD_ZERO(&readfds);
         FD_SET(sockfd, &readfds);
         
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 50;  // Timeout curto para verificar pacotes rapidamente
-        usleep((rand() % (MAX_DELAY * 2 - MIN_DELAY + 1)) + MAX_DELAY); 
+        timeout.tv_sec = (int)TimeoutInterval;  
+        timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6;  
 
         int ready = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
         if (ready == 0) {  // **Timeout atingido**
