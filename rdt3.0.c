@@ -8,7 +8,7 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <math.h>
-#include<unistd.h>
+#include <unistd.h>
 
 #define MAX_MSG_LEN 16
 #define ERROR -1
@@ -166,11 +166,8 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
     
     double TimeoutInterval = EstRTT + 4 * DevRTT;
     
-    int loop_counter = 0;
-    const int MAX_LOOP_COUNT = 1000;
 
-    while (loop_counter < MAX_LOOP_COUNT) {
-        loop_counter++;
+    while (1) {
 
         // Envia novos pacotes enquanto houver espaço na janela e dados no arquivo
         while (packets_in_flight < WINDOW_SIZE && 
@@ -183,11 +180,8 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
                 return SEND_ERROR;
             
             gettimeofday(&sent_time[index], NULL);
-            if (sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
-                       (struct sockaddr *)dst, sizeof(struct sockaddr_in)) < 0) {
-                perror("sendto");
-                return SEND_ERROR;
-            }
+            sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
+                       (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             
             printf("Enviando pacote %d (%d bytes)\n", _snd_seqnum, bytes_read);
             
@@ -203,18 +197,15 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             double elapsed_time = (current_time.tv_sec - sent_time[base % (2 * WINDOW_SIZE)].tv_sec) +
                                   (current_time.tv_usec - sent_time[base % (2 * WINDOW_SIZE)].tv_usec) / 1e6;
             if (elapsed_time > TimeoutInterval) {
-                printf("Timeout no pacote base %d (elapsed: %.3f s > %.3f s). Retransmitindo janela...\n", 
-                       base, elapsed_time, TimeoutInterval);
+                printf("Timeout no pacote base %d . Retransmitindo janela\n", 
+                       base);
                 // Retransmite somente os pacotes não confirmados da janela
                 for (int i = 0; i < packets_in_flight; i++) {
                     int seqnum = base + i;
                     int index = seqnum % (2 * WINDOW_SIZE);
                     if (!acked[index]) {
-                        if (sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
-                                   (struct sockaddr *)dst, sizeof(struct sockaddr_in)) < 0) {
-                            perror("sendto (retransmit)");
-                            return SEND_ERROR;
-                        }
+                        sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
+                                   (struct sockaddr *)dst, sizeof(struct sockaddr_in));
                         gettimeofday(&sent_time[index], NULL);
                         printf("Retransmitindo pacote %d\n", seqnum);
                     }
@@ -269,8 +260,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             return FILE_DONE;
         }
         
-        // Pequena pausa para evitar busy waiting
-        usleep(1000);
+
     }
     
     // Se sair do loop principal, significa que nem todos os pacotes foram confirmados
