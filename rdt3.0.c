@@ -183,7 +183,7 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
                        (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             
-            printf("Enviando pacote %d (%d bytes)\n", _snd_seqnum, bytes_read);
+            printf("Enviando pacote %d \n", _snd_seqnum);
             
             acked[index] = 0;  
             _snd_seqnum++;
