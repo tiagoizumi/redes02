@@ -38,8 +38,8 @@ typedef uint8_t  htype_t;
 hseq_t _snd_seqnum = 1;
 hseq_t _rcv_seqnum = 1;
 
-double EstRTT = 0.0001;  
-double DevRTT = 0.0001;  
+double EstRTT = 0.1;  
+double DevRTT = 0.05;  
 double alpha = 0.125; 
 double beta = 0.25;   
 
@@ -154,28 +154,30 @@ int has_dataseqnum(pkt *p, hseq_t seqnum) {
 }
 
 int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
-    pkt sent_packets[WINDOW_SIZE];        // Buffer para os pacotes enviados
-    struct timeval sent_time[WINDOW_SIZE];  // Tempo de envio de cada pacote
-    int acked[WINDOW_SIZE] = {0};           // 0 = não ACK, 1 = ACK recebido
+    // Buffer aumentado para 2 * WINDOW_SIZE para evitar sobreposição
+    pkt sent_packets[2 * WINDOW_SIZE];        
+    struct timeval sent_time[2 * WINDOW_SIZE];  
+    int acked[2 * WINDOW_SIZE] = {0};           
 
-    int packets_in_flight = 0; // Quantidade de pacotes atualmente "no ar"
-    int base = _snd_seqnum;    // O pacote mais antigo ainda não confirmado
+    int packets_in_flight = 0; 
+    int base = _snd_seqnum;    // _snd_seqnum é a sequência global de envio
     char buffer[MAX_MSG_LEN];
     int bytes_read;
     
-    // TimeoutInterval baseado em EstRTT e DevRTT
     double TimeoutInterval = EstRTT + 4 * DevRTT;
     
-    // Contador para limitar a duração do loop (para evitar loops infinitos)
     int loop_counter = 0;
     const int MAX_LOOP_COUNT = 1000;
 
     while (loop_counter < MAX_LOOP_COUNT) {
         loop_counter++;
 
-        // 1. Envia pacotes enquanto houver espaço na janela e dados para ler do arquivo
-        while (packets_in_flight < WINDOW_SIZE && (bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0) {
-            int index = (_snd_seqnum % WINDOW_SIZE);
+        // Envia novos pacotes enquanto houver espaço na janela e dados no arquivo
+        while (packets_in_flight < WINDOW_SIZE && 
+               (bytes_read = fread(buffer, 1, MAX_MSG_LEN, file)) > 0) {
+
+            // Índice circular para o buffer de pacotes
+            int index = _snd_seqnum % (2 * WINDOW_SIZE);
             
             if (make_pkt(&sent_packets[index], PKT_DATA, _snd_seqnum, buffer, bytes_read) < 0)
                 return SEND_ERROR;
@@ -189,43 +191,38 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
             
             printf("Enviando pacote %d (%d bytes)\n", _snd_seqnum, bytes_read);
             
-            // Delay aleatório para simular variações na rede (não interfere no timer real)
-            // int delay = (rand() % (900000 - 10000 + 1)) + 10000;
-            // printf("Delay: %d microsegundos\n", delay);
-            // usleep(delay);
-            
-            acked[index] = 0;  // Marca como não confirmado
+            acked[index] = 0;  
             _snd_seqnum++;
             packets_in_flight++;
         }
         
-        // 2. Verifica se o pacote mais antigo (base) excedeu o TimeoutInterval
+        // Verifica timeout para o pacote base da janela
         struct timeval current_time;
         gettimeofday(&current_time, NULL);
         if (packets_in_flight > 0) {
-            double elapsed_time = (current_time.tv_sec - sent_time[base % WINDOW_SIZE].tv_sec) +
-                                    (current_time.tv_usec - sent_time[base % WINDOW_SIZE].tv_usec) / 1e6;
+            double elapsed_time = (current_time.tv_sec - sent_time[base % (2 * WINDOW_SIZE)].tv_sec) +
+                                  (current_time.tv_usec - sent_time[base % (2 * WINDOW_SIZE)].tv_usec) / 1e6;
             if (elapsed_time > TimeoutInterval) {
                 printf("Timeout no pacote base %d (elapsed: %.3f s > %.3f s). Retransmitindo janela...\n", 
                        base, elapsed_time, TimeoutInterval);
-                // Retransmite todos os pacotes pendentes a partir da base
+                // Retransmite somente os pacotes não confirmados da janela
                 for (int i = 0; i < packets_in_flight; i++) {
                     int seqnum = base + i;
-                    int index = seqnum % WINDOW_SIZE;
+                    int index = seqnum % (2 * WINDOW_SIZE);
                     if (!acked[index]) {
                         if (sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
                                    (struct sockaddr *)dst, sizeof(struct sockaddr_in)) < 0) {
                             perror("sendto (retransmit)");
                             return SEND_ERROR;
                         }
-                        gettimeofday(&sent_time[index], NULL); // Reinicia o timer para este pacote
+                        gettimeofday(&sent_time[index], NULL);
                         printf("Retransmitindo pacote %d\n", seqnum);
                     }
                 }
             }
         }
         
-        // 3. Tenta receber ACKs (operação não bloqueante)
+        // Tenta receber ACKs (o socket deve estar configurado em modo não bloqueante)
         struct sockaddr_in dst_ack;
         socklen_t addrlen = sizeof(dst_ack);
         pkt ack;
@@ -234,12 +231,13 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
         if (nr > 0) {
             gettimeofday(&current_time, NULL);
             if (!iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK) {
-                int ack_index = ack.h.pkt_seq % WINDOW_SIZE;
+                // Índice do ACK usando aritmética modular
+                int ack_index = ack.h.pkt_seq % (2 * WINDOW_SIZE);
                 
-                if (!acked[ack_index]) { // Se ainda não confirmado
-                    acked[ack_index] = 1; // Marca o ACK como recebido
+                if (!acked[ack_index]) { 
+                    acked[ack_index] = 1; 
                     
-                    // Calcula o SampleRTT e atualiza EstRTT, DevRTT e TimeoutInterval
+                    // Atualiza os parâmetros RTT
                     double SampleRTT = (current_time.tv_sec - sent_time[ack_index].tv_sec) +
                                          (current_time.tv_usec - sent_time[ack_index].tv_usec) / 1e6;
                     EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
@@ -248,30 +246,34 @@ int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst) {
                     
                     printf("ACK recebido para o pacote %d\n", ack.h.pkt_seq);
                     
-                    // Avança a base da janela se o ACK for para o pacote base
-                    while (packets_in_flight > 0 && acked[base % WINDOW_SIZE]) {
-                        acked[base % WINDOW_SIZE] = 0;
+                    // Avança a base da janela: enquanto o pacote base já foi confirmado, move a janela
+                    while (packets_in_flight > 0 && acked[base % (2 * WINDOW_SIZE)]) {
+                        // Limpa o status do pacote no buffer
+                        acked[base % (2 * WINDOW_SIZE)] = 0;
                         packets_in_flight--;
                         base++;
                     }
                 }
             }
         } else {
-            // Se recvfrom falhar por um motivo diferente de EWOULDBLOCK/EAGAIN, trata o erro
+            // Caso não tenha recebido nenhum ACK (ou seja, recvfrom retornou -1)
             if (errno != EWOULDBLOCK && errno != EAGAIN) {
                 perror("recvfrom");
                 return SEND_ERROR;
             }
         }
         
-        // 4. Critério de saída: se o arquivo terminou e não há pacotes pendentes, a transmissão está completa
+        // Se todos os dados foram lidos do arquivo e não há pacotes em voo, a transmissão está concluída
         if (feof(file) && packets_in_flight == 0) {
-            printf("Transmissão concluída nesta chamada de rdt_send!\n");
+            printf("Transmissão concluída!\n");
             return FILE_DONE;
         }
+        
+        // Pequena pausa para evitar busy waiting
+        usleep(1000);
     }
     
-    // Se atingiu o número máximo de iterações mas ainda há pacotes pendentes, retorna PART_SENT
+    // Se sair do loop principal, significa que nem todos os pacotes foram confirmados
     return PART_SENT;
 }
 
@@ -382,7 +384,6 @@ int rdt_recv(int sockfd, struct sockaddr_in *src) {
     printf("Arquivo salvo como output.txt\n");
     return SUCCESS;
 }
-
 
 
 
