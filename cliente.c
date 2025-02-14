@@ -11,20 +11,19 @@
 #define SEND_ERROR -1
 #define FILE_DONE  0
 #define PART_SENT  1
+#define BUFFER_SIZE 4096  // Define o tamanho do buffer de leitura
 
-// Os valores MIN e MAX devem ser os mesmos utilizados no rdt_send para o delay
-#define MIN 10000
-#define MAX 900000
+ // 900ms
 
 int main(int argc, char **argv) {
     if (argc != 4) {
-        fprintf(stderr, "Usage: %s <server_ip> <server_port> <file>\n", argv[0]);
+        fprintf(stderr, "Uso: %s <server_ip> <server_port> <file>\n", argv[0]);
         return EXIT_FAILURE;
     }
     
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
-        perror("socket");
+        perror("Erro ao criar socket");
         return EXIT_FAILURE;
     }
     
@@ -50,27 +49,30 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     
-    FILE *file = fopen(argv[3], "r");
+    FILE *file = fopen(argv[3], "rb");  // Abrir arquivo em modo binário para evitar problemas
     if (!file) {
-        perror("fopen");
+        perror("Erro ao abrir arquivo");
         close(sockfd);
         return EXIT_FAILURE;
     }
     
-    printf("Enviando arquivo: %s\n", argv[3]);
+    printf("Iniciando transmissão do arquivo: %s\n", argv[3]);
     
+    char buffer[BUFFER_SIZE];
     int send_status = PART_SENT;
-    // Chama rdt_send repetidamente até que o arquivo seja completamente transmitido
-    while (send_status == PART_SENT) {
-        send_status = rdt_send(sockfd, file, &server_addr);
+    size_t bytes_read;
+
+    while ((bytes_read = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        send_status = rdt_send(sockfd, buffer, bytes_read, &server_addr);
+        
         if (send_status == SEND_ERROR) {
             fprintf(stderr, "Erro durante a transmissão.\n");
             break;
         }
-        // Delay entre chamadas (entre 10 ms e 900 ms)
         
+        // Pequeno delay para evitar sobrecarga na rede
     }
-    
+
     if (send_status == FILE_DONE) {
         printf("Arquivo transmitido corretamente.\n");
     }

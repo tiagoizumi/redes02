@@ -43,10 +43,8 @@ int iscorrupted(pkt *);
 int make_pkt(pkt *, htype_t, hseq_t, void *, int);
 int has_ackseq(pkt *, hseq_t);
 
-int rdt_send(int sockfd, FILE *file, struct sockaddr_in *dst);
-
-
-int rdt_recv(int sockfd, struct sockaddr_in *src);
+int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *dst);
+int rdt_recv(int sockfd, FILE *file, struct sockaddr_in *src);
 
 int has_dataseqnum(pkt *, hseq_t);
 
