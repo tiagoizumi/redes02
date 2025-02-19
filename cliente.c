@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "rdt.h"
+//Comentario diferenciado para voce
+
 
 #define SEND_ERROR -1
 #define FILE_DONE  0
