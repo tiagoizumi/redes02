@@ -83,3 +83,6 @@ int main(int argc, char **argv) {
     close(sockfd);
     return EXIT_SUCCESS;
 }
+
+
+//md5sum data2.txt output2.txt

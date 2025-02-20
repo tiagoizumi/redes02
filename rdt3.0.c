@@ -10,7 +10,7 @@
 #include <math.h>
 #include <unistd.h>
 
-#define MAX_MSG_LEN 16
+#define MAX_MSG_LEN 10
 #define ERROR -1
 #define TRUE 1
 #define FALSE 0
@@ -19,7 +19,7 @@
 #define PART_SENT  1
 #define FILE_DONE  0
 #define SEND_ERROR -1
-#define BUFFER_SIZE 32
+#define BUFFER_SIZE 64
 #define MIN 100000
 #define MAX 9000000
 #define LOSS_RATE 15
@@ -41,7 +41,7 @@ double EstRTT = 0.1;
 double DevRTT = 0.05;  
 double alpha = 0.125; 
 double beta = 0.25;   
-double TimeoutInterval = 0.2; // Inicializando um valor padrão
+double TimeoutInterval = 0.1; // Inicializando um valor padrão
 
 struct hdr {
     hseq_t  pkt_seq;
@@ -109,9 +109,9 @@ int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *d
     int base = _snd_seqnum;
     int bytes_sent = 0;
     int last_ack_received = -1;
-    int ssthresh = WINDOW_SIZE;
+    int ssthresh = WINDOW_SIZE/3;
     enum CongestionState state = SLOW_START;
-    int window_size = 1;  // Start with window size 1 (Slow Start)
+    float window_size = 1;  // Start with window size 1 (Slow Start)
 
     struct timeval base_sent_time, current_time, timeout;
     fd_set readfds;
@@ -133,11 +133,10 @@ int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *d
             // Simulate packet delay (loss) randomly
 
             // Inside the sending loop:
-            if (rand() % 100 >= 0) { // Only send if not "lost"
+            if (rand() % 100 >= LOSS_RATE) { // Only send if not "lost"
                 sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
                     (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-
-                printf("Sending packet %d (%d bytes) - Window: %d, State: %s\n", 
+                printf("Sending packet %d (%d bytes) - Window: %f, State: %s\n", 
                     _snd_seqnum, pkt_size, window_size, 
                     state == SLOW_START ? "SLOW_START" : "CONGESTION_AVOIDANCE");
             } else {
@@ -170,7 +169,7 @@ int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *d
             printf("Timeout on packet base %d. Reducing window...\n", base);
             
             ssthresh = WINDOW_SIZE;
-            window_size = 1;
+            window_size = 0.5;
             state = SLOW_START;
 
             gettimeofday(&base_sent_time, NULL);
@@ -222,11 +221,11 @@ int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *d
                         break;
                 }
 
-                // Garante que a janela não ultrapasse o máximo permitido
-                if (window_size > 2 * WINDOW_SIZE) {
-                    // printf("--------JANELA NAO EXCEDER------------- \n\n");
-                    window_size = 2 * WINDOW_SIZE;
-                }
+                 //Garante que a janela de transmissao não ultrapasse o máximo permitido
+                if (window_size > WINDOW_SIZE) {
+                     printf("--------JANELA NAO EXCEDER------------- \n");
+                     window_size = WINDOW_SIZE;
+                 }
 
                 // Desliza a janela removendo pacotes já reconhecidos
                 while (packets_in_flight > 0 && acked[base % (2 * WINDOW_SIZE)]) {
