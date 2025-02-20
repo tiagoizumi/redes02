@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
 
     int sockfd;
     struct sockaddr_in server_addr, client_addr;
-    socklen_t addrlen = sizeof(client_addr);
+    // socklen_t addrlen = sizeof(client_addr);
     
     // Criar socket UDP
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
