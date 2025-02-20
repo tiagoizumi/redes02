@@ -13,7 +13,7 @@
 #define SEND_ERROR -1
 #define FILE_DONE  0
 #define PART_SENT  1
-#define BUFFER_SIZE 4096  // Define o tamanho do buffer de leitura
+#define BUFFER_SIZE 100000  // Define o tamanho do buffer de leitura
 
  // 900ms
 
