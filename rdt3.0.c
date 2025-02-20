@@ -15,15 +15,13 @@
 #define TRUE 1
 #define FALSE 0
 #define SUCCESS 0
-#define WINDOW_SIZE 4
+#define WINDOW_SIZE 16
 #define PART_SENT  1
 #define FILE_DONE  0
 #define SEND_ERROR -1
-#define MIN_DELAY 10000    // 10ms
-#define MAX_DELAY 900000  // 900ms
+
 #define BUFFER_SIZE 32
-#define MIN 100000
-#define MAX 9000000
+
 
 int biterror_inject = FALSE;
 
@@ -42,7 +40,7 @@ double EstRTT = 0.1;
 double DevRTT = 0.05;  
 double alpha = 0.125; 
 double beta = 0.25;   
-double TimeoutInterval = 0.5; // Inicializando um valor padrão
+double TimeoutInterval = 0.2; // Inicializando um valor padrão
 
 struct hdr {
     hseq_t  pkt_seq;
@@ -101,159 +99,162 @@ int make_pkt(pkt *p, htype_t type, hseq_t seqnum, void *msg, int msg_len) {
 enum CongestionState {
     SLOW_START,
     CONGESTION_AVOIDANCE,
-    FAST_RECOVERY
 };
 
+#include <fcntl.h>
+#include <errno.h>
+
 int rdt_send(int sockfd, char *buffer, size_t buffer_size, struct sockaddr_in *dst) {
-    pkt sent_packets[2 * WINDOW_SIZE];        
-    int acked[2 * WINDOW_SIZE] = {0};           
+    pkt sent_packets[2 * WINDOW_SIZE];
+    int acked[2 * WINDOW_SIZE] = {0};
     int packets_in_flight = 0;
     int base = _snd_seqnum;
     int bytes_sent = 0;
-    int dup_ack_count = 0;
     int last_ack_received = -1;
-    int ssthresh = WINDOW_SIZE;
+    int ssthresh = WINDOW_SIZE/2;
     enum CongestionState state = SLOW_START;
-    int window_size = 1;  // Start with window size 1 (Slow Start)
+    int window_size = 1;  // Inicializa com window size 1 (Slow Start)
 
     struct timeval base_sent_time, current_time, timeout;
-    fd_set readfds;
+    fd_set readfds, writefds;
+
+    // Configura o socket para modo não bloqueante
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 
     while (bytes_sent < buffer_size || packets_in_flight > 0) {
-        // Send packets within current window
-        while (packets_in_flight < window_size && bytes_sent < buffer_size) {
+        int can_send = window_size;
+        
+        // Tenta enviar novos pacotes se houver espaço na janela e o buffer não estiver cheio
+        while (can_send > 0 && bytes_sent < buffer_size) {
+            // Se o número de pacotes em voo atingir o limite, sai do loop para tratar ACKs
+            if (packets_in_flight >= 2 * WINDOW_SIZE) {
+                break;
+            }
+            
             int index = _snd_seqnum % (2 * WINDOW_SIZE);
             int pkt_size = (buffer_size - bytes_sent > MAX_MSG_LEN) ? MAX_MSG_LEN : buffer_size - bytes_sent;
-
             make_pkt(&sent_packets[index], PKT_DATA, _snd_seqnum, buffer + bytes_sent, pkt_size);
-            
-            // Only set base time for first packet in window
-            if (packets_in_flight == 0) {
+
+            // Registra o tempo do primeiro pacote da janela
+            if (can_send == window_size) {
                 gettimeofday(&base_sent_time, NULL);
             }
-
-            sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0, 
-                   (struct sockaddr *)dst, sizeof(struct sockaddr_in));
-
-            printf("Sending packet %d (%d bytes) - Window: %d, State: %s\n", 
-                   _snd_seqnum, pkt_size, window_size, 
-                   state == SLOW_START ? "SLOW_START" : 
-                   state == CONGESTION_AVOIDANCE ? "CONGESTION_AVOIDANCE" : "FAST_RECOVERY");
+            
+            ssize_t sent_bytes = sendto(sockfd, &sent_packets[index], sent_packets[index].h.pkt_size, 0,
+                                         (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            if (sent_bytes < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // Se não for possível enviar agora, sai do loop e tenta novamente após processar ACKs
+                    break;
+                }
+                perror("sendto");
+                return -1;
+            }
+            
+            printf("Enviando pacote %d - Window_size: %d, pacotes em voo: %d, Estado: %s\n", 
+                   _snd_seqnum, window_size, packets_in_flight,
+                   state == SLOW_START ? "SLOW_START" : "CONGESTION_AVOIDANCE");
 
             acked[index] = 0;
             _snd_seqnum++;
-            packets_in_flight++;
+            can_send--;
             bytes_sent += pkt_size;
+            packets_in_flight++;
         }
-
-        // Set up select() for timeout
+        
+        // Prepara os descritores para leitura e escrita
         FD_ZERO(&readfds);
+        FD_ZERO(&writefds);
         FD_SET(sockfd, &readfds);
+        FD_SET(sockfd, &writefds);
         
         timeout.tv_sec = (int)TimeoutInterval;
         timeout.tv_usec = (TimeoutInterval - timeout.tv_sec) * 1e6;
-
-        int ready = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
         
-        // Timeout occurred
+        printf("timeout:%ld\n",timeout.tv_usec);
+        int ready = select(sockfd + 1, &readfds, &writefds, NULL, &timeout);
+        
+        // Se ocorrer timeout, retransmite o pacote base e ajusta o controle de congestionamento
         if (ready == 0) {
-            printf("Timeout on packet base %d. Reducing window...\n", base);
-            
-            // Timeout handling
+            printf("Timeout no pacote base %d. Reduzindo janela...\n", base);
             ssthresh = window_size / 2;
             window_size = 1;
             state = SLOW_START;
-            dup_ack_count = 0;
-
-            // Retransmit the oldest unacked packet
             gettimeofday(&base_sent_time, NULL);
-            sendto(sockfd, &sent_packets[base % (2 * WINDOW_SIZE)], 
-                   sent_packets[base % (2 * WINDOW_SIZE)].h.pkt_size, 
-                   0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            sendto(sockfd, &sent_packets[base % (2 * WINDOW_SIZE)],
+                   sent_packets[base % (2 * WINDOW_SIZE)].h.pkt_size, 0,
+                   (struct sockaddr *)dst, sizeof(struct sockaddr_in));
             continue;
         }
-
-        // Receive ACK
-        struct sockaddr_in dst_ack;
-        socklen_t addrlen = sizeof(dst_ack);
-        pkt ack;
-        int nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
-
-        if (nr > 0 && !iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK) {
-            int ack_index = ack.h.pkt_seq % (2 * WINDOW_SIZE);
+        
+        // Se houver dados para leitura (ACKs)
+        if (FD_ISSET(sockfd, &readfds)) {
+            struct sockaddr_in dst_ack;
+            socklen_t addrlen = sizeof(dst_ack);
+            pkt ack;
+            int nr = recvfrom(sockfd, &ack, sizeof(ack), 0, (struct sockaddr *)&dst_ack, &addrlen);
             
-            // Duplicate ACK handling
-            if (ack.h.pkt_seq == last_ack_received) {
-                dup_ack_count++;
-                if (dup_ack_count == 3) {
-                    printf("Fast retransmit triggered for packet %d\n", ack.h.pkt_seq + 1);
-                    ssthresh = window_size / 2;
-                    window_size = ssthresh + 3;
-                    state = FAST_RECOVERY;
-                    
-                    // Retransmit missing packet
-                    sendto(sockfd, &sent_packets[(ack.h.pkt_seq + 1) % (2 * WINDOW_SIZE)],
-                           sent_packets[(ack.h.pkt_seq + 1) % (2 * WINDOW_SIZE)].h.pkt_size,
-                           0, (struct sockaddr *)dst, sizeof(struct sockaddr_in));
+            if (nr > 0 && !iscorrupted(&ack) && ack.h.pkt_type == PKT_ACK) {
+                int ack_index = ack.h.pkt_seq % (2 * WINDOW_SIZE);
+                
+                // Ignora ACKs duplicados
+                if (ack.h.pkt_seq == last_ack_received) {
+                    continue;
                 }
-            } else {
-                dup_ack_count = 0;
                 last_ack_received = ack.h.pkt_seq;
-            }
-
-            if (!acked[ack_index]) {
-                acked[ack_index] = 1;
-
-                // Update RTT estimates
-                gettimeofday(&current_time, NULL);
-                double SampleRTT = (current_time.tv_sec - base_sent_time.tv_sec) + 
-                                   (current_time.tv_usec - base_sent_time.tv_usec) / 1e6;
-                EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
-                DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
-                TimeoutInterval = EstRTT + 4 * DevRTT;
-
-                printf("ACK received for packet %d - RTT: %.3f, Timeout: %.3f\n", 
-                       ack.h.pkt_seq, SampleRTT, TimeoutInterval);
-
-                // Update window size based on congestion state
-                switch (state) {
-                    case SLOW_START:
+                
+                if (!acked[ack_index]) {
+                    acked[ack_index] = 1;
+                    
+                    // Atualiza as estimativas de RTT
+                    gettimeofday(&current_time, NULL);
+                    double SampleRTT = (current_time.tv_sec - base_sent_time.tv_sec) +
+                                         (current_time.tv_usec - base_sent_time.tv_usec) / 1e6;
+                    EstRTT = (1 - alpha) * EstRTT + alpha * SampleRTT;
+                    DevRTT = (1 - beta) * DevRTT + beta * fabs(SampleRTT - EstRTT);
+                    TimeoutInterval = EstRTT + 4 * DevRTT;
+                    
+                    printf("ACK recebido para o pacote %d - RTT: %.3f, Timeout: %.3f\n",
+                           ack.h.pkt_seq, SampleRTT, TimeoutInterval);
+                    
+                    // Ajusta a janela de congestionamento conforme o estado
+                    if (state == SLOW_START) {
                         if (window_size >= ssthresh) {
                             state = CONGESTION_AVOIDANCE;
-                        } else {
                             window_size++;
+
+                        } else {
+                            window_size *= 2;
                         }
-                        break;
-                    case CONGESTION_AVOIDANCE:
-                        window_size += 1.0 / window_size;
-                        break;
-                    case FAST_RECOVERY:
-                        window_size = ssthresh;
-                        state = CONGESTION_AVOIDANCE;
-                        break;
-                }
-
-                // Ensure window size doesn't exceed maximum
-                if (window_size > 2 * WINDOW_SIZE) {
-                    window_size = 2 * WINDOW_SIZE;
-                }
-
-                // Slide window
-                while (packets_in_flight > 0 && acked[base % (2 * WINDOW_SIZE)]) {
-                    acked[base % (2 * WINDOW_SIZE)] = 0;
-                    packets_in_flight--;
-                    base++;
+                    } else if (state == CONGESTION_AVOIDANCE) {
+                        window_size++;
+                    }
+                    
+                    if (window_size > WINDOW_SIZE) {
+                        printf("limitou a janela\n");
+                        window_size = WINDOW_SIZE;
+                    }
+                    
+                    // Desliza a janela removendo os pacotes já confirmados
+                    while (packets_in_flight > 0 && acked[base % (2 * WINDOW_SIZE)]) {
+                        acked[base % (2 * WINDOW_SIZE)] = 0;
+                        packets_in_flight--;
+                        base++;
+                    }
                 }
             }
         }
-
-        if (bytes_sent >= buffer_size && packets_in_flight == 0) {
-            return FILE_DONE;
-        }
+        
+        // Se o socket estiver pronto para escrita, o loop interno já cuidará do envio.
     }
-
+    
+    if (bytes_sent >= buffer_size && packets_in_flight == 0)
+        return FILE_DONE;
+    
     return PART_SENT;
 }
+
 
 int rdt_recv(int sockfd, FILE *file, struct sockaddr_in *src) {
     pkt p, ack;
@@ -262,7 +263,7 @@ int rdt_recv(int sockfd, FILE *file, struct sockaddr_in *src) {
     int received_count = 0;
     
     // Buffer for out-of-order packets
-    pkt recv_buffer[2 * WINDOW_SIZE];
+    pkt recv_buffer[2 * WINDOW_SIZE];    // Buffer size is 2 * WINDOW_SIZE
     int received[2 * WINDOW_SIZE] = {0};
 
     struct timeval timeout;
@@ -336,9 +337,9 @@ int rdt_recv(int sockfd, FILE *file, struct sockaddr_in *src) {
         }
 
         // Send ACK
-        make_pkt(&ack, PKT_ACK, p.h.pkt_seq, NULL, 0);
+        make_pkt(&ack, PKT_ACK, _rcv_seqnum - 1, NULL, 0);
         sendto(sockfd, &ack, ack.h.pkt_size, 0, (struct sockaddr*)src, sizeof(struct sockaddr_in));
-        printf("ACK sent for packet %d\n", p.h.pkt_seq);
+        printf("ACK sent for packet %d\n", _rcv_seqnum - 1);
 
         // Window size adjustment
         if (received_count >= window_size) {
